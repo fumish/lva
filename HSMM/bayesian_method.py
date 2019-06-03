@@ -42,7 +42,8 @@ import numpy as np
 from scipy.special import gammaln, psi
 import matplotlib.pyplot as plt
 import seaborn as sns
-from scipy.stats import t, cauchy, laplace, gumbel_r, norm
+from scipy.stats import t, cauchy, laplace, gumbel_r, norm, skewnorm
+import math
 
 
 def printmd(x):
@@ -63,15 +64,64 @@ np.random.seed(data_seed)
 true_label = np.random.multinomial(n = 1, pvals = true_ratio, size = n)
 true_label_arg = np.argmax(true_label, axis = 1)
 
-### true distribution is GMM
-import math
+# +
+# ### true distribution is GMM
+# import math
+# x = np.zeros((n, M))
+# for i in range(n):
+#     for j in range(M):
+#         x[i, j] = norm.rvs(loc=true_b[true_label_arg[i],j], scale=1/true_s[true_label_arg[i],j], size = 1)
+# noise_data_num = math.ceil(n*true_delta)
+# if noise_data_num > 0:
+#     x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+
+# +
+# ### ラプラス分布の混合の場合
+# import math
+# x = np.zeros((n, M))
+# for i in range(n):
+#     for j in range(M):
+#         x[i, j] = laplace.rvs(loc=true_b[true_label_arg[i],j], scale=1/true_s[true_label_arg[i],j], size = 1)
+# noise_data_num = math.ceil(n*true_delta)
+# if noise_data_num > 0:
+#     x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+
+# +
+# ### Mixture of Gumbel distribution
+# np.random.seed(data_seed)
+# x = np.zeros((n, M))
+# for i in range(n):
+#     for j in range(M):
+#         x[i, j] = gumbel_r.rvs(loc=true_b[true_label_arg[i],j], scale=1/true_s[true_label_arg[i],j], size = 1)
+
+# noise_data_num = math.ceil(n*true_delta)
+# if noise_data_num > 0:
+#     x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+
+# +
+# ### Mixture of student distribution
+# np.random.seed(data_seed)
+# x = np.zeros((n, M))
+# for i in range(n):
+#     for j in range(M):
+#         x[i, j] = t.rvs(df = 1.5, loc=true_b[true_label_arg[i],j], scale=1/true_s[true_label_arg[i],j], size = 1)
+
+# noise_data_num = math.ceil(n*true_delta)
+# if noise_data_num > 0:
+#     x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+
+# +
+### Mixture of normal-skew distribution
+np.random.seed(data_seed)
 x = np.zeros((n, M))
 for i in range(n):
     for j in range(M):
-        x[i, j] = norm.rvs(loc=true_b[true_label_arg[i],j], scale=1/true_s[true_label_arg[i],j], size = 1)
+        x[i, j] = skewnorm.rvs(a = 2, loc=true_b[true_label_arg[i],j], scale=1/true_s[true_label_arg[i],j], size = 1)
+
 noise_data_num = math.ceil(n*true_delta)
 if noise_data_num > 0:
     x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+# -
 
 plt.scatter(x[:,0], x[:,1])
 plt.show()
@@ -81,10 +131,10 @@ plt.show()
 learning_seed = 20190529
 burn_in = 20
 sampling_interval = 20
-sampling_num = 10000
+sampling_num = 1000
 
-K = 3
-pri_alpha = 2
+K = 5
+pri_alpha = 0.1
 pri_beta = 0.01
 pri_gamma = 2
 pri_delta = 2
@@ -93,29 +143,136 @@ pri_delta = 2
 
 np.random.seed(learning_seed)
 
-### 初期値を決める
-latent_label = np.random.multinomial(1, pvals = np.ones(K)/K, size=n)
-latent_arg = np.argmax(latent_label, axis = 1)
+### Decide initial value
+current_latent_label = np.random.multinomial(1, pvals = np.ones(K)/K, size=n)
+current_latent_arg = np.argmax(current_latent_label, axis = 1)
+
 
 # +
+def sample_param(x:np.ndarray, y:np.ndarray, K:int, pri_alpha:float=0.1, pri_beta:float=0.001, pri_gamma:float=2, pri_delta=2):
+    M = x.shape[1]
+    n_k = y.sum(axis = 0)
+    current_alpha = n_k + pri_alpha
+    current_beta = n_k + pri_beta
+    current_mu = y.T @ x / (np.repeat(current_beta, M).reshape(K,M))
+    current_gamma = n_k/2 + pri_gamma
+    current_delta = current_latent_label.T @ x**2/2 - np.repeat(current_beta,M).reshape(K,M) * current_mu**2/2 + pri_delta
+
+    current_s = np.random.gamma(shape=np.repeat(current_gamma, M).reshape(K,M), scale=1/current_delta)
+    current_b = np.array([np.random.multivariate_normal(current_mu[k,:], np.diag(1/(current_s[k,:]*current_beta[k]))) for k in range(K)])
+    current_a = np.random.dirichlet(current_alpha)
+    
+    return(current_s, current_b, current_a)
+
+def sample_latent(expand_x:np.ndarray, K:int, current_post_a:np.ndarray, current_post_b:np.ndarray, current_post_s:np.ndarray):
+    expand_s = np.repeat(current_post_s, n).reshape(K,M,n).transpose(2,0,1)
+    expand_b = np.repeat(current_post_b, n).reshape(K,M,n).transpose(2,0,1)
+    loglik = np.repeat(np.log(current_a) + np.log(current_s).sum(axis=1)/2, n).reshape(K,n).T - (expand_s * (expand_b - expand_x)**2/2).sum(axis = 2)
+    max_loglik = loglik.max(axis = 1)
+    norm_loglik = loglik - np.repeat(max_loglik,K).reshape(n,K)
+    current_latent_prob = np.exp(norm_loglik) / np.repeat(np.exp(norm_loglik).sum(axis = 1), K).reshape(n,K)
+    current_latent_label = np.array([np.random.multinomial(n=1, pvals = current_latent_prob[i,:], size = 1) for i in range(n)]).squeeze()    
+    
+    return(current_latent_prob, current_latent_label)
+
+
+# +
+expand_x = np.repeat(x, K).reshape(n,M,K).transpose(0,2,1)
+
 ### Calculate the steps until burn_in times
 for i_burnin in range(burn_in):
     ### Samnpling from parameters
-    n_k = latent_label.sum(axis = 0)
-    post_alpha = n_k + pri_alpha
-    post_beta = n_k + pri_beta
-    post_mu = latent_label.T @ x / (np.repeat(post_beta, M).reshape(K,M))
-    post_gamma = n_k/2 + pri_gamma
-    post_delta = latent_label.T @ x**2/2 - np.repeat(post_beta,M).reshape(K,M) * post_mu**2 + pri_delta
+    n_k = current_latent_label.sum(axis = 0)
+    current_alpha = n_k + pri_alpha
+    current_beta = n_k + pri_beta
+    current_mu = current_latent_label.T @ x / (np.repeat(current_beta, M).reshape(K,M))
+    current_gamma = n_k/2 + pri_gamma
+    current_delta = current_latent_label.T @ x**2/2 - np.repeat(current_beta,M).reshape(K,M) * current_mu**2/2 + pri_delta
 
-    
+    current_s = np.random.gamma(shape=np.repeat(current_gamma, M).reshape(K,M), scale=1/current_delta)
+    current_b = np.array([np.random.multivariate_normal(current_mu[k,:], np.diag(1/(current_s[k,:]*current_beta[k]))) for k in range(K)])
+    current_a = np.random.dirichlet(current_alpha)
+
     ### Sampling from latent variables
+    expand_s = np.repeat(current_s, n).reshape(K,M,n).transpose(2,0,1)
+    expand_b = np.repeat(current_b, n).reshape(K,M,n).transpose(2,0,1)
+    loglik = np.repeat(np.log(current_a) + np.log(current_s).sum(axis=1)/2, n).reshape(K,n).T - (expand_s * (expand_b - expand_x)**2/2).sum(axis = 2)
+    max_loglik = loglik.max(axis = 1)
+    norm_loglik = loglik - np.repeat(max_loglik,K).reshape(n,K)
+    current_latent_prob = np.exp(norm_loglik) / np.repeat(np.exp(norm_loglik).sum(axis = 1), K).reshape(n,K)
+    current_latent_label = np.array([np.random.multinomial(n=1, pvals = current_latent_prob[i,:], size = 1) for i in range(n)]).squeeze()
 
 
+# +
+ind = 0
+post_s = np.zeros((sampling_num,K,M))
+post_b = np.zeros((sampling_num,K,M))
+post_a = np.zeros((sampling_num,K))
+
+post_latent_prob = np.zeros((sampling_num,n,K))
+post_latent_label = np.zeros((sampling_num,n,K))
+for ite in range(sampling_interval * sampling_num):
+    ### Samnpling from parameters
+    n_k = current_latent_label.sum(axis = 0)
+    current_alpha = n_k + pri_alpha
+    current_beta = n_k + pri_beta
+    current_mu = current_latent_label.T @ x / (np.repeat(current_beta, M).reshape(K,M))
+    current_gamma = n_k/2 + pri_gamma
+    current_delta = current_latent_label.T @ x**2/2 - np.repeat(current_beta,M).reshape(K,M) * current_mu**2/2 + pri_delta
+
+    current_s = np.random.gamma(shape=np.repeat(current_gamma, M).reshape(K,M), scale=1/current_delta)
+    current_b = np.array([np.random.multivariate_normal(current_mu[k,:], np.diag(1/(current_s[k,:]*current_beta[k]))) for k in range(K)])
+    current_a = np.random.dirichlet(current_alpha)
+
+    ### Sampling from latent variables
+    expand_s = np.repeat(current_s, n).reshape(K,M,n).transpose(2,0,1)
+    expand_b = np.repeat(current_b, n).reshape(K,M,n).transpose(2,0,1)
+    loglik = np.repeat(np.log(current_a) + np.log(current_s).sum(axis=1)/2, n).reshape(K,n).T - (expand_s * (expand_b - expand_x)**2/2).sum(axis = 2)
+    max_loglik = loglik.max(axis = 1)
+    norm_loglik = loglik - np.repeat(max_loglik,K).reshape(n,K)
+    current_latent_prob = np.exp(norm_loglik) / np.repeat(np.exp(norm_loglik).sum(axis = 1), K).reshape(n,K)
+    current_latent_label = np.array([np.random.multinomial(n=1, pvals = current_latent_prob[i,:], size = 1) for i in range(n)]).squeeze()
+    
+    if ite % sampling_interval == 0:
+        post_s[ind,:,:] = current_s
+        post_b[ind,:,:] = current_b
+        post_a[ind,:] = current_a
+        post_latent_prob[ind,:,:] = current_latent_prob
+        post_latent_label[ind,:,:] = current_latent_label
+        ind += 1
 # -
 
-np.random.gamma()
+post_latent_label
 
-for ite in range(sampling_interval * sampling_num):
+import itertools
+label_prob_gibbs = post_latent_prob.mean(axis=0)
+if noise_data_num > 0:
+    target_label_arg = true_label_arg[:-noise_data_num]
+    label_arg_gibbs = np.argmax(label_prob_gibbs, axis = 1)[:-noise_data_num]    
+else:
+    target_label_arg = true_label_arg
+    label_arg_gibbs = np.argmax(label_prob_gibbs, axis = 1)
+max_correct_num_gibbs = 0
+for perm in list(itertools.permutations(range(K), K)):
+    permed_label_arg_gibbs = label_arg_gibbs.copy()
+    for i in range(len(perm)):
+        permed_label_arg_gibbs[label_arg_gibbs == i] = perm[i]
+    correct_num_gibbs = (permed_label_arg_gibbs == target_label_arg).sum()
+    if correct_num_gibbs > max_correct_num_gibbs:
+        max_correct_num_gibbs = correct_num_gibbs
+        max_perm_gibbs = perm
+        max_label_arg_gibbs = permed_label_arg_gibbs
+
+max_correct_num_gibbs
+
+# +
+for i in range(K):
+    if noise_data_num > 0:
+        plt.scatter(x[np.where(max_label_arg_gibbs[:-noise_data_num] == i)[0],0], x[np.where(max_label_arg_gibbs[:-noise_data_num] == i)[0],1])
+    else:
+        plt.scatter(x[np.where(max_label_arg_gibbs == i)[0],0], x[np.where(max_label_arg_gibbs == i)[0],1])
+    
+plt.show()
+# -
 
 
