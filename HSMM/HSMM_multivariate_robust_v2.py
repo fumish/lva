@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # ---
 # jupyter:
 #   jupytext:
@@ -31,6 +30,7 @@
 # 1. Cauchy distribution
 # 1. Gamma distribution
 # 1. Skew Normal distribution
+# 1. Parato distribution
 
 # ### Suplementary material: Local Variational Approximation algorithm for HSMM
 # + Model:
@@ -53,7 +53,7 @@
 #    4. Update the following values
 #        + $h_{ik}(\xi) = \psi(\hat{\alpha}_k) - \psi(\sum_{l=1}^K \hat{\alpha}_l) + \frac{1}{2} \sum_{j=1}^M (\psi(\hat{\gamma}_{kj}) - \log(\hat{\delta}_{kj})) - \sum_{j=1}^M \log(\cosh(\sqrt{g_{ikj}(\eta)}/2)) $
 #        + $u_{ik}(\xi) = \frac{ \exp(h_{ik}(\xi)) }{ \sum_{l=1}^K \exp(h_{il}(\xi)) }$
-#        + ここで,$\psi(x) = \frac{d}{dx}\log \Gamma(x)$
+#        + where,$\psi(x) = \frac{d}{dx}\log \Gamma(x)$
 #    5. Return back to 2.
 #    
 # + Evaluation function $\overline{F}_{\xi, \eta}(x^n)$:
@@ -67,7 +67,7 @@ import numpy as np
 from scipy.special import gammaln, psi
 import matplotlib.pyplot as plt
 import seaborn as sns
-from scipy.stats import norm, t, cauchy, laplace, gumbel_r, gamma, skewnorm
+from scipy.stats import norm, t, cauchy, laplace, gumbel_r, gamma, skewnorm, pareto
 
 
 # ## Used funtions
@@ -362,8 +362,8 @@ K = 5
 ## Hyperparameters
 pri_alpha = 0.1
 pri_beta = 0.001
-pri_gamma = 2
-pri_delta = 2
+pri_gamma = 3
+pri_delta = 3
 
 
 # -
@@ -530,6 +530,23 @@ x = np.zeros((n, M))
 for i in range(n):
     for j in range(M):
         x[i, j] = skewnorm.rvs(a = 2, loc=true_b[true_label_arg[i],j], scale=1/true_s[true_label_arg[i],j], size = 1)
+
+noise_data_num = math.ceil(n*true_delta)
+if noise_data_num > 0:
+    x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+# -
+
+learning_and_labeling()
+
+# ## 9. Cluster distribution is Parato distribution
+# + Parato distribution has inifite variance if $shape \leq 2$.
+
+# +
+np.random.seed(data_seed)
+x = np.zeros((n, M))
+for i in range(n):
+    for j in range(M):
+        x[i, j] = pareto.rvs(b = 1.5, loc=true_b[true_label_arg[i],j], scale=1/true_s[true_label_arg[i],j], size = 1)
 
 noise_data_num = math.ceil(n*true_delta)
 if noise_data_num > 0:
