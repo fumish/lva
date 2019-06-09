@@ -34,7 +34,7 @@
 
 # ### Suplementary material: Local Variational Approximation algorithm for HSMM
 # + Model:
-#     + $p(x|w) = \sum_{k=1}^K a_k \prod_{j = 1}^M \frac{\sqrt{s_{kj}}}{2} \frac{1}{\cosh(\frac{s_{kj}}{2}(x_j - b_{kj}))}$
+#     + $p(x|w) = \sum_{k=1}^K a_k \prod_{j = 1}^M \frac{\sqrt{s_{kj}}}{2\pi} \frac{1}{\cosh(\frac{s_{kj}}{2}(x_j - b_{kj}))}$
 #     + $x, b_k \in \mathbb{R}^M, s_k \in \mathbb{R}_+^M$
 # + Prior distribution:
 #     + $\varphi(w) = Dir(a|\{ \alpha_k \}_{k=1}^K) \prod_{k=1}^K N(b_k|0, (s_k \beta_k)^{-1} ) Gam(s_k|\gamma_k, \delta_k)$
@@ -67,7 +67,8 @@ import numpy as np
 from scipy.special import gammaln, psi
 import matplotlib.pyplot as plt
 import seaborn as sns
-from scipy.stats import norm, t, cauchy, laplace, gumbel_r, gamma, skewnorm, pareto
+from scipy.stats import norm, t, cauchy, laplace, gumbel_r, gamma, skewnorm, pareto, multivariate_normal
+from typing import Callable
 
 
 # ## Used funtions
@@ -80,13 +81,72 @@ def random_hsm(n, loc = 0, scale = 1):
     """
     Generate data following hyperbolic secant distribution.
     Let $Y \sim standard_cauchy(x)$,  
-    random variable $X = \frac{2}{s}\sinh^{-1}(Y) + b$ follows to  
-    $X \sim p(x) = \frac{s}{2\pi}\frac{1}{\cosh(s(x-b)/2)}$.
+    random variable $X = \frac{2}{\sqrt{s}}\sinh^{-1}(Y) + b$ follows to  
+    $X \sim p(x) = \frac{\sqrt{s}}{2\pi}\frac{1}{\cosh(s(x-b)/2)}$.
     """
     Y = np.random.standard_cauchy(size=n)
     X = 2/np.sqrt(scale)*np.arcsinh(Y) + loc    
     return X
 
+
+# +
+def logpdf_hypsecant(x:np.ndarray, mean:np.ndarray, precision:np.ndarray):
+    """
+    Calculate \log p(x|w) = \sum_{j=1}^M \log(\frac{\sqrt{s_j}}{2\pi} 1/cosh(\sqrt{s_j}/2(x_j - b_j)))
+    Input:
+     + x: n*M
+     + mean: M
+     + precision :M
+    Output:
+     + n*M
+    """
+    (n, M) = x.shape
+    expand_precision = np.repeat(precision, n).reshape(M,n).T
+    y = np.sqrt(expand_precision)*(x - np.repeat(mean, n).reshape(M,n).T)/2
+    return(np.log(expand_precision)/2 - np.log(2*np.pi) - logcosh(y)).sum(axis = 1)
+
+def logpdf_multivariate_normal(x:np.ndarray, mean:np.ndarray, precision:np.ndarray):
+    """
+    Calculate \log p(x|w) = \sum_{j=1}^M \log(\frac{\sqrt{s_j}}{2\pi} 1/cosh(\sqrt{s_j}/2(x_j - b_j)))
+    Input:
+     + x: n*M
+     + mean: M
+     + precision :M
+    Output:
+     + n*M
+    """
+    (n, M) = x.shape
+    expand_precision = np.repeat(precision, n).reshape(M,n).T
+    y = expand_precision*(x - np.repeat(mean,n).reshape(M,n).T)**2/2
+    return(np.log(expand_precision)/2 - np.log(2*np.pi)/2 - y).sum(axis = 1)
+    pass
+
+
+# +
+def logcosh(x:np.ndarray):
+    ret_val = -x + np.log((1 + np.exp(2*x))/2)
+    (row, col) = np.where(x > 0)
+    ret_val[row, col] = x[row, col] + np.log((1 + np.exp(-2*x[row,col]))/2)
+    return ret_val
+
+# def logpdf_multivariate_normal(x:np.ndarray, mean:np.ndarray, precision:np.ndarray):
+#     return multivariate_normal.logpdf(x, mean=mean, cov=np.diag(1/precision))
+
+# def logpdf_hypsecant(x:np.ndarray, mean:np.ndarray, precision:np.ndarray):
+#     return hypsecant.logpdf(x, mean, precision).sum(axis=1)
+
+def logpdf_mixture_dist(x:np.ndarray, param:dict, component_log_dist:Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray]):
+    n = x.shape[0]
+    K = len(param["ratio"])
+    loglik = np.zeros((n,K))
+    for k in range(K):
+        loglik[:,k] = np.log(param["ratio"][k]) + component_log_dist(test_x, param["mean"][k,:],  param["precision"][k,:])
+    max_loglik = loglik.max(axis = 1)
+    norm_loglik = loglik - np.repeat(max_loglik,K).reshape(n,K)
+    return (np.log(np.exp(norm_loglik).sum(axis = 1)) + max_loglik)
+
+
+# -
 
 def fit_lva_gmm(train_X:np.ndarray, K:int,
                  pri_alpha = 0.1, pri_beta = 0.001, pri_gamma = 2, pri_delta = 2,
@@ -121,7 +181,7 @@ def fit_lva_gmm(train_X:np.ndarray, K:int,
     
     (n, M) = train_X.shape
     ### Setting for static variable in the algorithm.
-    expand_x = np.repeat(x, K).reshape(n, M, K).transpose((0, 2, 1)) ### n * K * M data with the same matrix among 2nd dimension
+    expand_x = np.repeat(train_X, K).reshape(n, M, K).transpose((0, 2, 1)) ### n * K * M data with the same matrix among 2nd dimension
 
     min_energy = np.inf
     result = dict()
@@ -140,9 +200,9 @@ def fit_lva_gmm(train_X:np.ndarray, K:int,
             ### Update posterior distribution of parameter.
             est_alpha = pri_alpha + est_u_xi.sum(axis = 0)
             est_beta = np.repeat(pri_beta + est_u_xi.sum(axis = 0), M).reshape(K,M)
-            est_m = est_u_xi.T @ x / est_beta
+            est_m = est_u_xi.T @ train_X / est_beta
             est_gamma = np.repeat(pri_gamma + est_u_xi.sum(axis = 0)/2, M).reshape(K,M)
-            est_delta = pri_delta + est_u_xi.T @ (x**2) /2 - est_beta / 2 * est_m**2
+            est_delta = pri_delta + est_u_xi.T @ (train_X**2) /2 - est_beta / 2 * est_m**2
             
             ### Update posterior distribution of latent variable
             est_g_eta = np.repeat(est_gamma / est_delta, n).reshape(K,M,n).transpose((2,0,1)) * (expand_x - np.repeat(est_m,n).reshape(K,M,n).transpose((2,0,1)))**2 + 1/np.repeat(est_beta, n).reshape(K,M,n).transpose((2,0,1))
@@ -159,6 +219,9 @@ def fit_lva_gmm(train_X:np.ndarray, K:int,
         print(energy[-1])        
         if energy[-1] < min_energy:
             min_energy = energy[-1]
+            result["ratio"] = est_alpha / est_alpha.sum()
+            result["mean"] = est_m
+            result["precision"] = est_gamma / est_delta
             result["alpha"] = est_alpha
             result["mu"] = est_m
             result["beta"] = est_beta
@@ -207,7 +270,7 @@ def fit_lva_hsmm(train_X:np.ndarray, K:int,
     
     (n, M) = train_X.shape
     ### Setting for static variable in the algorithm.
-    expand_x = np.repeat(x, K).reshape(n, M, K).transpose((0, 2, 1)) ### n * K * M data with the same matrix among 2nd dimension
+    expand_x = np.repeat(train_X, K).reshape(n, M, K).transpose((0, 2, 1)) ### n * K * M data with the same matrix among 2nd dimension
 
     min_energy = np.inf
     result = dict()
@@ -252,6 +315,9 @@ def fit_lva_hsmm(train_X:np.ndarray, K:int,
         print(energy[-1])        
         if energy[-1] < min_energy:
             min_energy = energy[-1]
+            result["ratio"] = est_alpha / est_alpha.sum()
+            result["mean"] = est_m
+            result["precision"] = est_gamma / est_delta
             result["alpha"] = est_alpha
             result["beta"] = est_beta
             result["mu"] = est_m
@@ -290,39 +356,53 @@ def evaluate_correct_cluster_number(result:dict, noise_data_num:int, true_label_
     return (max_correct_num, max_perm, max_est_label_arg)
 
 
+def evaluate_log_loss(fit_result:dict, true_param:dict, noise_data_num:int, test_x:np.ndarray,
+                      true_logpdf:Callable[[np.ndarray, dict],np.ndarray], pred_logpdf:Callable[[np.ndarray, dict], np.ndarray]):
+    if noise_data_num > 0:
+        return (true_logpdf(test_x, true_param) - pred_logpdf(test_x, fit_result))[:-noise_data_num].mean()
+    else:
+        return (true_logpdf(test_x, true_param) - pred_logpdf(test_x, fit_result)).mean()
+
+
 def learning_and_labeling():
     printmd("### 1. Data distribution:")
-    plot_scatter_with_label(x, true_label_arg,  K0, noise_data_num)
+    plot_scatter_with_label(train_x, true_train_label_arg,  K0, noise_data_num)
 
     printmd("### 2. Learning by GMM:")
-    gmm_result = fit_lva_gmm(x, K, pri_alpha = pri_alpha, pri_beta = pri_beta, pri_gamma = pri_gamma, pri_delta = pri_delta, learning_seeds = learning_seeds)
+    gmm_result = fit_lva_gmm(train_x, K, pri_alpha = pri_alpha, pri_beta = pri_beta, pri_gamma = pri_gamma, pri_delta = pri_delta, learning_seeds = learning_seeds)
     print("mean plug-in parameters: \n {0}".format({
         "est_ratio": gmm_result["alpha"] / sum(gmm_result["alpha"]),
         "est_mean": gmm_result["mu"],
         "est_precision": gmm_result["gamma"] / gmm_result["delta"]
     }))
-    (correct_num_gmm, perm_gmm, label_arg_gmm) = evaluate_correct_cluster_number(gmm_result, noise_data_num, true_label_arg, K)
+    (correct_num_gmm, perm_gmm, label_arg_gmm) = evaluate_correct_cluster_number(gmm_result, noise_data_num, true_train_label_arg, K)
 
     printmd("### 3.. Learning by HSMM:")
-    hsmm_result = fit_lva_hsmm(x, K, pri_alpha = pri_alpha, pri_beta = pri_beta, pri_gamma = pri_gamma, pri_delta = pri_delta, learning_seeds=learning_seeds)
+    hsmm_result = fit_lva_hsmm(train_x, K, pri_alpha = pri_alpha, pri_beta = pri_beta, pri_gamma = pri_gamma, pri_delta = pri_delta, learning_seeds=learning_seeds)
     print("mean plug-in parameters: \n {0}".format({
         "est_ratio": hsmm_result["alpha"] / sum(hsmm_result["alpha"]),
         "est_mean": hsmm_result["mu"],
         "est_precision": hsmm_result["gamma"] / hsmm_result["delta"]
     }))
-    (correct_num_hsmm, perm_hsmm, label_arg_hsmm) = evaluate_correct_cluster_number(hsmm_result, noise_data_num, true_label_arg, K)
+    (correct_num_hsmm, perm_hsmm, label_arg_hsmm) = evaluate_correct_cluster_number(hsmm_result, noise_data_num, true_train_label_arg, K)
 
     printmd("### 4. Correct number of labeling of GMM:")
     printmd("+ {0}/{1}".format(correct_num_gmm, len(label_arg_hsmm)))
 
     printmd("### 5. Correct number of labeling of HSMM:")
     printmd("+ {0}/{1}".format(correct_num_hsmm, len(label_arg_hsmm)))
+    
+    printmd("### 6. Generalization error of GMM:")
+    printmd("+ {0}".format(evaluate_log_loss(gmm_result, true_param, noise_data_num, test_x, true_logpdf, pred_logpdf_gmm)))
+    
+    printmd("### 7. Generalization error of HSMM:")
+    printmd("+ {0}".format(evaluate_log_loss(hsmm_result, true_param, noise_data_num, test_x, true_logpdf, pred_logpdf_hsmm)))
 
-    printmd("### 6. Data distribution labeled by GMM:")
-    plot_scatter_with_label(x, label_arg_gmm,  K, noise_data_num)
+    printmd("### 8. Data distribution labeled by GMM:")
+    plot_scatter_with_label(train_x, label_arg_gmm,  K, noise_data_num)
 
-    printmd("### 7. Data distribution labeled by HSMM:")
-    plot_scatter_with_label(x, label_arg_hsmm,  K, noise_data_num)
+    printmd("### 9. Data distribution labeled by HSMM:")
+    plot_scatter_with_label(train_x, label_arg_hsmm,  K, noise_data_num)
 
 
 def plot_scatter_with_label(x:np.ndarray, label_arg:np.ndarray,  K:int, noise_data_num):
@@ -339,19 +419,24 @@ def plot_scatter_with_label(x:np.ndarray, label_arg:np.ndarray,  K:int, noise_da
 
 # ## Problem setting:
 
-data_seed = 20190522
 true_ratio = np.array([0.33, 0.33, 0.34])
 true_delta = 0
-true_s = np.array([[2, 2], [0.5, 0.5], [1, 1]])
+true_s = np.array([[1.5, 1.5], [0.5, 0.5], [1, 1]])
 true_b = np.array([[4, 4], [-4, -4], [0, 0]])
-n = 2000
-M = true_b.shape[1]
+true_param = dict()
+true_param["ratio"] = true_ratio
+true_param["mean"] = true_b
+true_param["precision"] = true_s
 K0 = len(true_ratio)
-np.random.seed(data_seed)
+M = true_b.shape[1]
 
 # ## Learning setting:
 
 # +
+data_seed = 20190522
+n = 2000
+np.random.seed(data_seed)
+
 ### Iteration settings
 iteration = 1000
 learning_seeds = [20190511, 20190512, 20190513, 20190514, 20190515]
@@ -362,145 +447,197 @@ K = 5
 ## Hyperparameters
 pri_alpha = 0.1
 pri_beta = 0.001
-pri_gamma = 3
-pri_delta = 3
+pri_gamma = 2
+pri_delta = 2
+
+### log predictive distribution
+pred_logpdf_gmm = lambda x, param: logpdf_mixture_dist(x, param, logpdf_multivariate_normal)
+pred_logpdf_hsmm = lambda x, param: logpdf_mixture_dist(x, param, logpdf_hypsecant)
 
 
 # -
+
+# ## Test setting:
+
+test_data_num = 10000
+test_seed = 20190604
 
 # ### Label setting for each data
 # + Remark: Label is fixed through each cluster distribution.
 
-true_label = np.random.multinomial(n = 1, pvals = true_ratio, size = n)
-true_label_arg = np.argmax(true_label, axis = 1)
+true_train_label = np.random.multinomial(n = 1, pvals = true_ratio, size = n)
+true_train_label_arg = np.argmax(true_train_label, axis = 1)
+true_test_label = np.random.multinomial(n = 1, pvals = true_ratio, size = test_data_num)
+true_test_label_arg = np.argmax(true_test_label, axis = 1)
 
 # ## 1. Cluster distribution is Gaussian distribution
 
+true_logpdf = lambda x, param: logpdf_mixture_dist(x, param, logpdf_multivariate_normal)
+
 # +
 np.random.seed(data_seed)
-x = np.zeros((n, M))
+train_x = np.zeros((n, M))
 for i in range(n):
     for j in range(M):
-        x[i, j] = norm.rvs(loc=true_b[true_label_arg[i],j], scale=true_s[true_label_arg[i],j], size = 1)
+        train_x[i, j] = norm.rvs(loc=true_b[true_train_label_arg[i],j], scale=1/np.sqrt(true_s[true_train_label_arg[i],j]), size = 1)
 
 noise_data_num = math.ceil(n*true_delta)
 if noise_data_num > 0:
-    x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+    train_x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+    
+np.random.seed(test_seed)
+test_x = np.zeros((test_data_num, M))
+for i in range(test_data_num):
+    for j in range(M):
+        test_x[i, j] = norm.rvs(loc=true_b[true_test_label_arg[i],j], scale=1/np.sqrt(true_s[true_test_label_arg[i],j]), size = 1)
+
+noise_data_num = math.ceil(test_data_num*true_delta)
+if noise_data_num > 0:
+    test_x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
 # -
 
 learning_and_labeling()
 
-# +
-printmd("### 1. Data distribution:")
-plot_scatter_with_label(x, true_label_arg,  K0, noise_data_num)
-
-printmd("### 2. Learning by GMM:")
-gmm_result = fit_lva_gmm(x, K, pri_alpha = pri_alpha, pri_beta = pri_beta, pri_gamma = pri_gamma, pri_delta = pri_delta, learning_seeds = learning_seeds)
-print("mean plug-in parameters: \n {0}".format({
-    "est_ratio": gmm_result["alpha"] / sum(gmm_result["alpha"]),
-    "est_mean": gmm_result["mu"],
-    "est_precision": gmm_result["gamma"] / gmm_result["delta"]
-}))
-(correct_num_gmm, perm_gmm, label_arg_gmm) = evaluate_correct_cluster_number(gmm_result, noise_data_num, true_label_arg, K)
-
-printmd("### 3.. Learning by HSMM:")
-hsmm_result = fit_lva_hsmm(x, K, pri_alpha = pri_alpha, pri_beta = pri_beta, pri_gamma = pri_gamma, pri_delta = pri_delta, learning_seeds=learning_seeds)
-print("mean plug-in parameters: \n {0}".format({
-    "est_ratio": hsmm_result["alpha"] / sum(hsmm_result["alpha"]),
-    "est_mean": hsmm_result["mu"],
-    "est_precision": hsmm_result["gamma"] / hsmm_result["delta"]
-}))
-(correct_num_hsmm, perm_hsmm, label_arg_hsmm) = evaluate_correct_cluster_number(hsmm_result, noise_data_num, true_label_arg, K)
-
-printmd("### 4. Correct number of labeling of GMM:")
-printmd("+ {0}/{1}".format(correct_num_gmm, len(label_arg_hsmm)))
-
-printmd("### 5. Correct number of labeling of HSMM:")
-printmd("+ {0}/{1}".format(correct_num_hsmm, len(label_arg_hsmm)))
-
-printmd("### 6. Data distribution labeled by GMM:")
-plot_scatter_with_label(x, label_arg_gmm,  K, noise_data_num)
-
-printmd("### 7. Data distribution labeled by HSMM:")
-plot_scatter_with_label(x, label_arg_hsmm,  K, noise_data_num)
-# -
-
 # ## 2. Cluster distribution is Hyperbolic secant distribution
+
+true_logpdf = lambda x, param: logpdf_mixture_dist(x, param, logpdf_hypsecant)
 
 # +
 np.random.seed(data_seed)
-x = np.zeros((n, M))
+train_x = np.zeros((n, M))
 for i in range(n):
     for j in range(M):
-        x[i, j] = random_hsm(n=1, loc=true_b[true_label_arg[i],j], scale=true_s[true_label_arg[i],j])
+        train_x[i, j] = random_hsm(n = 1, loc=true_b[true_train_label_arg[i],j], scale=true_s[true_train_label_arg[i],j])
 
 noise_data_num = math.ceil(n*true_delta)
 if noise_data_num > 0:
-    x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+    train_x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+    
+np.random.seed(test_seed)
+test_x = np.zeros((test_data_num, M))
+for i in range(test_data_num):
+    for j in range(M):
+        test_x[i, j] = random_hsm(n = 1, loc=true_b[true_test_label_arg[i],j], scale=true_s[true_test_label_arg[i],j])
+
+noise_data_num = math.ceil(test_data_num*true_delta)
+if noise_data_num > 0:
+    test_x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
 # -
 
 learning_and_labeling()
 
 # ## 3. Cluster distribution is Laplace distribution
 
+logpdf_laplace = lambda x, mean, precision: laplace.logpdf(test_x, loc=mean, scale=1/precision).sum(axis=1)
+true_logpdf = lambda x, param: logpdf_mixture_dist(x, param, logpdf_laplace)
+
 # +
 np.random.seed(data_seed)
-x = np.zeros((n, M))
+train_x = np.zeros((n, M))
 for i in range(n):
     for j in range(M):
-        x[i, j] = laplace.rvs(loc=true_b[true_label_arg[i],j], scale=1/true_s[true_label_arg[i],j], size = 1)
+        train_x[i, j] = laplace.rvs(loc=true_b[true_train_label_arg[i],j], scale=1/true_s[true_train_label_arg[i],j], size=1)
 
 noise_data_num = math.ceil(n*true_delta)
 if noise_data_num > 0:
-    x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+    train_x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+    
+np.random.seed(test_seed)
+test_x = np.zeros((test_data_num, M))
+for i in range(test_data_num):
+    for j in range(M):
+        test_x[i, j] = laplace.rvs(loc=true_b[true_test_label_arg[i],j], scale=1/true_s[true_test_label_arg[i],j], size=1)
+
+noise_data_num = math.ceil(test_data_num*true_delta)
+if noise_data_num > 0:
+    test_x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
 # -
 
 learning_and_labeling()
 
 # ## 4. Cluster distribution is Gumbel distribution
 
+logpdf_gumbel = lambda x, mean, precision: gumbel_r.logpdf(test_x, loc=mean, scale=1/precision).sum(axis=1)
+true_logpdf = lambda x, param: logpdf_mixture_dist(x, param, logpdf_gumbel)
+
 # +
 np.random.seed(data_seed)
-x = np.zeros((n, M))
+train_x = np.zeros((n, M))
 for i in range(n):
     for j in range(M):
-        x[i, j] = gumbel_r.rvs(loc=true_b[true_label_arg[i],j], scale=1/true_s[true_label_arg[i],j], size = 1)
+        train_x[i, j] = gumbel_r.rvs(loc=true_b[true_train_label_arg[i],j], scale=1/true_s[true_train_label_arg[i],j], size=1)
 
 noise_data_num = math.ceil(n*true_delta)
 if noise_data_num > 0:
-    x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+    train_x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+    
+np.random.seed(test_seed)
+test_x = np.zeros((test_data_num, M))
+for i in range(test_data_num):
+    for j in range(M):
+        test_x[i, j] = gumbel_r.rvs(loc=true_b[true_test_label_arg[i],j], scale=1/true_s[true_test_label_arg[i],j], size=1)
+
+noise_data_num = math.ceil(test_data_num*true_delta)
+if noise_data_num > 0:
+    test_x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
 # -
 
 learning_and_labeling()
 
 # ## 5. Cluster distribution is student distribution
 
+logpdf_t = lambda x, mean, precision: t.logpdf(test_x, df=1.5, loc=mean, scale=1/precision).sum(axis=1)
+true_logpdf = lambda x, param: logpdf_mixture_dist(x, param, logpdf_t)
+
 # +
 np.random.seed(data_seed)
-x = np.zeros((n, M))
+train_x = np.zeros((n, M))
 for i in range(n):
     for j in range(M):
-        x[i, j] = t.rvs(df = 1.5, loc=true_b[true_label_arg[i],j], scale=1/true_s[true_label_arg[i],j], size = 1)
+        train_x[i, j] = t.rvs(df = 1.5, loc=true_b[true_train_label_arg[i],j], scale=1/true_s[true_train_label_arg[i],j], size=1)
 
 noise_data_num = math.ceil(n*true_delta)
 if noise_data_num > 0:
-    x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+    train_x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+    
+np.random.seed(test_seed)
+test_x = np.zeros((test_data_num, M))
+for i in range(test_data_num):
+    for j in range(M):
+        test_x[i, j] = t.rvs(df = 1.5, loc=true_b[true_test_label_arg[i],j], scale=1/true_s[true_test_label_arg[i],j], size=1)
+
+noise_data_num = math.ceil(test_data_num*true_delta)
+if noise_data_num > 0:
+    test_x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
 # -
 
 learning_and_labeling()
 
 # ## 6. Cluster distribution is Cauchy distribution
 
+logpdf_cauchy = lambda x, mean, precision: cauchy.logpdf(test_x, loc=mean, scale=1/precision).sum(axis=1)
+true_logpdf = lambda x, param: logpdf_mixture_dist(x, param, logpdf_cauchy)
+
 # +
 np.random.seed(data_seed)
-x = np.zeros((n, M))
+train_x = np.zeros((n, M))
 for i in range(n):
     for j in range(M):
-        x[i, j] = cauchy.rvs(loc=true_b[true_label_arg[i],j], scale=1/true_s[true_label_arg[i],j], size = 1)
+        train_x[i, j] = cauchy.rvs(loc=true_b[true_train_label_arg[i],j], scale=1/true_s[true_train_label_arg[i],j], size=1)
 
 noise_data_num = math.ceil(n*true_delta)
 if noise_data_num > 0:
-    x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+    train_x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+    
+np.random.seed(test_seed)
+test_x = np.zeros((test_data_num, M))
+for i in range(test_data_num):
+    for j in range(M):
+        test_x[i, j] = cauchy.rvs(loc=true_b[true_test_label_arg[i],j], scale=1/true_s[true_test_label_arg[i],j], size=1)
+
+noise_data_num = math.ceil(test_data_num*true_delta)
+if noise_data_num > 0:
+    test_x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
 # -
 
 learning_and_labeling()
@@ -508,32 +645,58 @@ learning_and_labeling()
 # ## 7. Cluster distribution is Gamma distribution
 # + Remark: Actually support of gamma distribution is not whole real line, but scipy can generate data with loc on real value.
 
+logpdf_gamma = lambda x, mean, precision: gamma.logpdf(test_x, a=1, loc=mean, scale=1/precision).sum(axis=1)
+true_logpdf = lambda x, param: logpdf_mixture_dist(x, param, logpdf_gamma)
+
 # +
 np.random.seed(data_seed)
-x = np.zeros((n, M))
+train_x = np.zeros((n, M))
 for i in range(n):
     for j in range(M):
-        x[i, j] = gamma.rvs(a = 1, loc=true_b[true_label_arg[i],j], scale=1/true_s[true_label_arg[i],j], size = 1)
+        train_x[i, j] = gamma.rvs(a = 1, loc=true_b[true_train_label_arg[i],j], scale=1/true_s[true_train_label_arg[i],j], size=1)
 
 noise_data_num = math.ceil(n*true_delta)
 if noise_data_num > 0:
-    x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+    train_x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+    
+np.random.seed(test_seed)
+test_x = np.zeros((test_data_num, M))
+for i in range(test_data_num):
+    for j in range(M):
+        test_x[i, j] = gamma.rvs(a = 1, loc=true_b[true_test_label_arg[i],j], scale=1/true_s[true_test_label_arg[i],j], size=1)
+
+noise_data_num = math.ceil(test_data_num*true_delta)
+if noise_data_num > 0:
+    test_x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
 # -
 
 learning_and_labeling()
 
 # ## 8. Cluster distribution is Skew Normal distribution
 
+logpdf_skewnormal = lambda x, mean, precision: skewnorm.logpdf(test_x, a=2, loc=mean, scale=1/precision).sum(axis=1)
+true_logpdf = lambda x, param: logpdf_mixture_dist(x, param, logpdf_skewnormal)
+
 # +
 np.random.seed(data_seed)
-x = np.zeros((n, M))
+train_x = np.zeros((n, M))
 for i in range(n):
     for j in range(M):
-        x[i, j] = skewnorm.rvs(a = 2, loc=true_b[true_label_arg[i],j], scale=1/true_s[true_label_arg[i],j], size = 1)
+        train_x[i, j] = skewnorm.rvs(a = 2, loc=true_b[true_train_label_arg[i],j], scale=1/true_s[true_train_label_arg[i],j], size=1)
 
 noise_data_num = math.ceil(n*true_delta)
 if noise_data_num > 0:
-    x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+    train_x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+    
+np.random.seed(test_seed)
+test_x = np.zeros((test_data_num, M))
+for i in range(test_data_num):
+    for j in range(M):
+        test_x[i, j] = skewnorm.rvs(a = 2, loc=true_b[true_test_label_arg[i],j], scale=1/true_s[true_test_label_arg[i],j], size=1)
+
+noise_data_num = math.ceil(test_data_num*true_delta)
+if noise_data_num > 0:
+    test_x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
 # -
 
 learning_and_labeling()
@@ -541,16 +704,31 @@ learning_and_labeling()
 # ## 9. Cluster distribution is Parato distribution
 # + Parato distribution has inifite variance if $shape \leq 2$.
 
+logpdf_pareto = lambda x, mean, precision: pareto.logpdf(test_x, b=1.5, loc=mean, scale=1/precision).sum(axis=1)
+true_logpdf = lambda x, param: logpdf_mixture_dist(x, param, logpdf_pareto)
+
 # +
 np.random.seed(data_seed)
-x = np.zeros((n, M))
+train_x = np.zeros((n, M))
 for i in range(n):
     for j in range(M):
-        x[i, j] = pareto.rvs(b = 1.5, loc=true_b[true_label_arg[i],j], scale=1/true_s[true_label_arg[i],j], size = 1)
+        train_x[i, j] = pareto.rvs(b = 1.5, loc=true_b[true_train_label_arg[i],j], scale=1/true_s[true_train_label_arg[i],j], size=1)
 
 noise_data_num = math.ceil(n*true_delta)
 if noise_data_num > 0:
-    x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+    train_x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+    
+np.random.seed(test_seed)
+test_x = np.zeros((test_data_num, M))
+for i in range(test_data_num):
+    for j in range(M):
+        test_x[i, j] = pareto.rvs(b = 1.5, loc=true_b[true_test_label_arg[i],j], scale=1/true_s[true_test_label_arg[i],j], size=1)
+
+noise_data_num = math.ceil(test_data_num*true_delta)
+if noise_data_num > 0:
+    test_x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
 # -
 
 learning_and_labeling()
+
+
