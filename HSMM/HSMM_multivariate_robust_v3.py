@@ -70,6 +70,8 @@ import seaborn as sns
 from scipy.stats import norm, t, cauchy, laplace, gumbel_r, gamma, skewnorm, pareto, multivariate_normal
 from typing import Callable
 
+from sklearn.mixture import BayesianGaussianMixture
+
 
 # ## Used funtions
 
@@ -96,31 +98,33 @@ def logpdf_hypsecant(x:np.ndarray, mean:np.ndarray, precision:np.ndarray):
     Input:
      + x: n*M
      + mean: M
-     + precision :M
+     + precision :M*M
     Output:
      + n*M
     """
     (n, M) = x.shape
-    expand_precision = np.repeat(precision, n).reshape(M,n).T
+    expand_precision = np.repeat(np.diag(precision), n).reshape(M,n).T
     y = np.sqrt(expand_precision)*(x - np.repeat(mean, n).reshape(M,n).T)/2
     return(np.log(expand_precision)/2 - np.log(2*np.pi) - logcosh(y)).sum(axis = 1)
 
-def logpdf_multivariate_normal(x:np.ndarray, mean:np.ndarray, precision:np.ndarray):
+def logpdf_multivariate_normal(x:np.ndarray, mean:np.ndarray, cov:np.ndarray):
     """
     Calculate \log p(x|w) = \sum_{j=1}^M \log(\frac{\sqrt{s_j}}{2\pi} 1/cosh(\sqrt{s_j}/2(x_j - b_j)))
     Input:
      + x: n*M
      + mean: M
-     + precision :M
+     + cov :M * M
     Output:
      + n*M
     """
-    (n, M) = x.shape
-    expand_precision = np.repeat(precision, n).reshape(M,n).T
-    y = expand_precision*(x - np.repeat(mean,n).reshape(M,n).T)**2/2
-    return(np.log(expand_precision)/2 - np.log(2*np.pi)/2 - y).sum(axis = 1)
-    pass
-
+    return(multivariate_normal.logpdf(x, mean = mean, cov = cov))
+    
+#     (n, M) = x.shape
+    
+    
+#     expand_precision = np.repeat(precision, n).reshape(M,n).T
+#     y = expand_precision*(x - np.repeat(mean,n).reshape(M,n).T)**2/2
+#     return(np.log(expand_precision)/2 - np.log(2*np.pi)/2 - y).sum(axis = 1)
 
 # +
 def logcosh(x:np.ndarray):
@@ -140,13 +144,72 @@ def logpdf_mixture_dist(x:np.ndarray, param:dict, component_log_dist:Callable[[n
     K = len(param["ratio"])
     loglik = np.zeros((n,K))
     for k in range(K):
-        loglik[:,k] = np.log(param["ratio"][k]) + component_log_dist(test_x, param["mean"][k,:],  param["precision"][k,:])
+        if param["scale"].ndim == 2:
+            loglik[:,k] = np.log(param["ratio"][k]) + component_log_dist(test_x, param["mean"][k,:],  param["scale"][k,:])
+        elif param["scale"].ndim == 3:
+            loglik[:,k] = np.log(param["ratio"][k]) + component_log_dist(test_x, param["mean"][k,:],  param["scale"][k,:,:])
+        else:
+            raise ValueError("Error precision, dimension of precision must be 2 or 3!")
     max_loglik = loglik.max(axis = 1)
     norm_loglik = loglik - np.repeat(max_loglik,K).reshape(n,K)
     return (np.log(np.exp(norm_loglik).sum(axis = 1)) + max_loglik)
 
 
 # -
+
+from sklearn.mixture import BayesianGaussianMixture
+def fit_gmm_sklearn(train_X:np.ndarray, K:int,
+                    pri_alpha = 0.1, pri_beta = 0.001, pri_gamma = 2, pri_delta = 2,
+                    iteration = 1000, restart_num:int = 5, learning_seeds:list = None):
+    """
+    LVA for GMM.
+    This is same with Variational Bayes inference for GMM.
+    Since the algorithm fails to local minima, the best estimator are chosen in several initial values.
+    
+    + Input:
+        + train_X: input data
+        + pri_alpha: hyperparameter for prior distribution of symmetric Dirichlet distribution.
+        + pri_beta: hyperparameter for prior distribution of Normal distribution for inverse variance.
+        + pri_gamma: hyperparameter for prior distribution of Gamma distribution for shape parameter.
+        + pri_delta: hyperparameter for prior distribution of Gamma distribution for rate parameter.
+        + iteration: Number of iteration.
+        + restart_num: Number of restart of inital values.
+        + learning_seeds: Seeds for initial values.
+        
+    + Output:
+        + Dictionary of the best estimated result:
+            1. alpha: parameter for posterior distribution of Dirichlet distribution.
+            2. mu: parameter for posterior distribution of Normal distribution for mean parameter.
+            3. beta: parameter for posterior distribution of Normal distribution for inverse variance parameter.
+            4. gamma: parameter for posterior distribution of Gamma distribution for shape parameter.
+            5. delta: parameter for posterior distribution of Gamma distribution for rate parameter.
+            6. h_xi: Value of E_w[log p(x_i, z_i = k|w)], where z_i is latent variable. This parameters form posterior latent distribution.
+            7. u_xi: Value of p(z_i = k). This parameters represent posterior probability of latent variable
+            8. energy: Value of the best evaluation function.
+            9. seed: Value of the best learning seed.
+    """
+    M = train_X.shape[1]
+    sklearn_gmm_obj = BayesianGaussianMixture(n_components=K,
+                                              covariance_type="full",
+                                              max_iter=iteration,
+                                              mean_precision_prior = pri_beta,
+                                              degrees_of_freedom_prior = M*pri_gamma,
+                                              covariance_prior = pri_delta * np.eye(M),
+                                              weight_concentration_prior_type="dirichlet_distribution",
+                                              weight_concentration_prior=pri_alpha,
+                                              n_init=5)
+    sklearn_gmm_obj.fit(train_X)
+        
+    result = dict()
+    result["ratio"] = sklearn_gmm_obj.weights_
+    result["mean"] = sklearn_gmm_obj.means_
+    result["precision"] = sklearn_gmm_obj.precisions_
+    result["scale"] = sklearn_gmm_obj.covariances_
+    result["u_xi"] = sklearn_gmm_obj.predict_proba(train_X)
+    
+    return result
+
+
 
 def fit_lva_gmm(train_X:np.ndarray, K:int,
                  pri_alpha = 0.1, pri_beta = 0.001, pri_gamma = 2, pri_delta = 2,
@@ -222,6 +285,7 @@ def fit_lva_gmm(train_X:np.ndarray, K:int,
             result["ratio"] = est_alpha / est_alpha.sum()
             result["mean"] = est_m
             result["precision"] = est_gamma / est_delta
+            result["scale"] = np.array([np.diag(est_delta[k,:] / est_gamma[k,:]) for k in range(K)])
             result["alpha"] = est_alpha
             result["mu"] = est_m
             result["beta"] = est_beta
@@ -318,6 +382,7 @@ def fit_lva_hsmm(train_X:np.ndarray, K:int,
             result["ratio"] = est_alpha / est_alpha.sum()
             result["mean"] = est_m
             result["precision"] = est_gamma / est_delta
+            result["scale"] = np.array([np.diag(est_gamma[k,:] / est_delta[k,:]) for k in range(K)])
             result["alpha"] = est_alpha
             result["beta"] = est_beta
             result["mu"] = est_m
@@ -334,15 +399,20 @@ def fit_lva_hsmm(train_X:np.ndarray, K:int,
 
 
 import itertools
-def evaluate_correct_cluster_number(result:dict, noise_data_num:int, true_label_arg, K:int):    
-    est_label_prob = result["u_xi"]
-    if noise_data_num > 0:
-        target_label_arg = true_label_arg[:-noise_data_num]
-        est_label_arg = np.argmax(est_label_prob, axis = 1)[:-noise_data_num]
-    else:
+def evaluate_correct_cluster_number(result:dict, noise_data_num:int, true_label_arg, K:int, predict_label = None):
+    if predict_label is not None:
+        est_label_arg = predict_label
+    else:        
+        est_label_prob = result["u_xi"]
         target_label_arg = true_label_arg
         est_label_arg = np.argmax(est_label_prob, axis = 1)
 
+    if noise_data_num > 0:
+        target_label_arg = true_label_arg[:-noise_data_num]
+        est_label_arg = est_label_arg[:-noise_data_num]
+    else:
+        target_label_arg = true_label_arg
+        
     max_correct_num = 0
     for perm in list(itertools.permutations(range(K), K)):
         permed_est_label_arg = est_label_arg.copy()
@@ -364,11 +434,21 @@ def evaluate_log_loss(fit_result:dict, true_param:dict, noise_data_num:int, test
         return (true_logpdf(test_x, true_param) - pred_logpdf(test_x, fit_result)).mean()
 
 
+from sklearn.mixture import BayesianGaussianMixture
 def learning_and_labeling():
     printmd("### 1. Data distribution:")
     plot_scatter_with_label(train_x, true_train_label_arg,  K0, noise_data_num)
-
-    printmd("### 2. Learning by GMM:")
+    
+    printmd("### 2. Learning by sklearn.mixture.BayesianGaussianMixture:")
+    sklearn_gmm_result = fit_gmm_sklearn(train_x, K, pri_alpha = pri_alpha, pri_beta = pri_beta, pri_gamma = pri_gamma, pri_delta = pri_delta, learning_seeds = learning_seeds)
+    print("mean plug-in parameters \n {0}".format({
+        "est_ratio": sklearn_gmm_result["ratio"],
+        "est_mean": sklearn_gmm_result["mean"],
+        "est_precision": sklearn_gmm_result["precision"]
+    }))
+    (correct_num_skgmm, perm_skgmm, label_arg_skgmm) = evaluate_correct_cluster_number(sklearn_gmm_result, noise_data_num, true_train_label_arg, K)    
+    
+    printmd("### 3. Learning by GMM:")
     gmm_result = fit_lva_gmm(train_x, K, pri_alpha = pri_alpha, pri_beta = pri_beta, pri_gamma = pri_gamma, pri_delta = pri_delta, learning_seeds = learning_seeds)
     print("mean plug-in parameters: \n {0}".format({
         "est_ratio": gmm_result["alpha"] / sum(gmm_result["alpha"]),
@@ -377,7 +457,7 @@ def learning_and_labeling():
     }))
     (correct_num_gmm, perm_gmm, label_arg_gmm) = evaluate_correct_cluster_number(gmm_result, noise_data_num, true_train_label_arg, K)
 
-    printmd("### 3.. Learning by HSMM:")
+    printmd("### 4. Learning by HSMM:")
     hsmm_result = fit_lva_hsmm(train_x, K, pri_alpha = pri_alpha, pri_beta = pri_beta, pri_gamma = pri_gamma, pri_delta = pri_delta, learning_seeds=learning_seeds)
     print("mean plug-in parameters: \n {0}".format({
         "est_ratio": hsmm_result["alpha"] / sum(hsmm_result["alpha"]),
@@ -386,22 +466,31 @@ def learning_and_labeling():
     }))
     (correct_num_hsmm, perm_hsmm, label_arg_hsmm) = evaluate_correct_cluster_number(hsmm_result, noise_data_num, true_train_label_arg, K)
 
-    printmd("### 4. Correct number of labeling of GMM:")
+    printmd("### 5. Correct number of labeling of GMM by sklearn:")
+    printmd("+ {0}/{1}".format(correct_num_skgmm, len(label_arg_hsmm)))
+        
+    printmd("### 5. Correct number of labeling of GMM:")
     printmd("+ {0}/{1}".format(correct_num_gmm, len(label_arg_hsmm)))
 
-    printmd("### 5. Correct number of labeling of HSMM:")
+    printmd("### 6. Correct number of labeling of HSMM:")
     printmd("+ {0}/{1}".format(correct_num_hsmm, len(label_arg_hsmm)))
+
+    printmd("### 7. Generalization error of GMM by sklearn:")
+    printmd("+ {0}".format(evaluate_log_loss(sklearn_gmm_result, true_param, noise_data_num, test_x, true_logpdf, pred_logpdf_gmm)))
     
-    printmd("### 6. Generalization error of GMM:")
+    printmd("### 8. Generalization error of GMM:")
     printmd("+ {0}".format(evaluate_log_loss(gmm_result, true_param, noise_data_num, test_x, true_logpdf, pred_logpdf_gmm)))
     
-    printmd("### 7. Generalization error of HSMM:")
+    printmd("### 9. Generalization error of HSMM:")
     printmd("+ {0}".format(evaluate_log_loss(hsmm_result, true_param, noise_data_num, test_x, true_logpdf, pred_logpdf_hsmm)))
 
-    printmd("### 8. Data distribution labeled by GMM:")
+    printmd("### 10. Data distribution labeled by GMM by sklearn:")
+    plot_scatter_with_label(train_x, label_arg_skgmm,  K, noise_data_num)
+    
+    printmd("### 11. Data distribution labeled by GMM:")
     plot_scatter_with_label(train_x, label_arg_gmm,  K, noise_data_num)
 
-    printmd("### 9. Data distribution labeled by HSMM:")
+    printmd("### 12. Data distribution labeled by HSMM:")
     plot_scatter_with_label(train_x, label_arg_hsmm,  K, noise_data_num)
 
 
@@ -427,6 +516,7 @@ true_param = dict()
 true_param["ratio"] = true_ratio
 true_param["mean"] = true_b
 true_param["precision"] = true_s
+true_param["scale"] = np.array([np.diag(1/np.sqrt(true_s[k,:])) for k in range(len(true_ratio))])
 K0 = len(true_ratio)
 M = true_b.shape[1]
 
@@ -469,6 +559,134 @@ true_train_label = np.random.multinomial(n = 1, pvals = true_ratio, size = n)
 true_train_label_arg = np.argmax(true_train_label, axis = 1)
 true_test_label = np.random.multinomial(n = 1, pvals = true_ratio, size = test_data_num)
 true_test_label_arg = np.argmax(true_test_label, axis = 1)
+
+
+
+# +
+np.random.seed(data_seed)
+train_x = np.zeros((n, M))
+for i in range(n):
+    for j in range(M):
+        train_x[i, j] = t.rvs(df = 3, loc=true_b[true_train_label_arg[i],j], scale=1/true_s[true_train_label_arg[i],j], size=1)
+
+noise_data_num = math.ceil(n*true_delta)
+if noise_data_num > 0:
+    train_x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+    
+np.random.seed(test_seed)
+test_x = np.zeros((test_data_num, M))
+for i in range(test_data_num):
+    for j in range(M):
+        test_x[i, j] = t.rvs(df = 1.5, loc=true_b[true_test_label_arg[i],j], scale=1/true_s[true_test_label_arg[i],j], size=1)
+
+noise_data_num = math.ceil(test_data_num*true_delta)
+if noise_data_num > 0:
+    test_x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+
+# +
+from sklearn.mixture import BayesianGaussianMixture
+printmd("### 1. Data distribution:")
+plot_scatter_with_label(train_x, true_train_label_arg,  K0, noise_data_num)
+
+printmd("### 2. Learning by sklearn.mixture.BayesianGaussianMixture:")
+sklearn_gmm_obj = BayesianGaussianMixture(n_components=K,covariance_type="full", max_iter=1000, weight_concentration_prior_type="dirichlet_process", weight_concentration_prior=5)
+sklearn_gmm_obj.fit(train_x)
+print("mean plug-in parameters \n {0}".format({
+    "est_ratio": sklearn_gmm_obj.weights_,
+    "est_mean": sklearn_gmm_obj.means_,
+    "est_precision": sklearn_gmm_obj.covariances_
+}))
+(correct_num_skgmm, perm_skgmm, label_arg_skgmm) = evaluate_correct_cluster_number(None, noise_data_num, true_train_label_arg, K, predict_label = sklearn_gmm_obj.predict(train_x))    
+
+printmd("### 3. Learning by GMM:")
+gmm_result = fit_lva_gmm(train_x, K, pri_alpha = pri_alpha, pri_beta = pri_beta, pri_gamma = pri_gamma, pri_delta = pri_delta, learning_seeds = learning_seeds)
+print("mean plug-in parameters: \n {0}".format({
+    "est_ratio": gmm_result["alpha"] / sum(gmm_result["alpha"]),
+    "est_mean": gmm_result["mu"],
+    "est_precision": gmm_result["gamma"] / gmm_result["delta"]
+}))
+(correct_num_gmm, perm_gmm, label_arg_gmm) = evaluate_correct_cluster_number(gmm_result, noise_data_num, true_train_label_arg, K)
+
+printmd("### 4. Learning by HSMM:")
+hsmm_result = fit_lva_hsmm(train_x, K, pri_alpha = pri_alpha, pri_beta = pri_beta, pri_gamma = pri_gamma, pri_delta = pri_delta, learning_seeds=learning_seeds)
+print("mean plug-in parameters: \n {0}".format({
+    "est_ratio": hsmm_result["alpha"] / sum(hsmm_result["alpha"]),
+    "est_mean": hsmm_result["mu"],
+    "est_precision": hsmm_result["gamma"] / hsmm_result["delta"]
+}))
+(correct_num_hsmm, perm_hsmm, label_arg_hsmm) = evaluate_correct_cluster_number(hsmm_result, noise_data_num, true_train_label_arg, K)
+
+
+# -
+
+ussebba = 50
+
+# +
+label_arg = true_train_label_arg
+
+
+for i in range(K):
+    plt.scatter(train_x[np.where((label_arg == i) & (np.abs(train_x[:,0]) < ussebba) & (np.abs(train_x[:,1]) < ussebba))[0],0],
+                train_x[np.where((label_arg == i) & (np.abs(train_x[:,0]) < ussebba) & (np.abs(train_x[:,1]) < ussebba))[0],1])        
+plt.show()
+
+# +
+label_arg = label_arg_skgmm 
+
+for i in range(K):
+    plt.scatter(train_x[np.where((label_arg == i) & (np.abs(train_x[:,0]) < ussebba) & (np.abs(train_x[:,1]) < ussebba))[0],0],
+                train_x[np.where((label_arg == i) & (np.abs(train_x[:,0]) < ussebba) & (np.abs(train_x[:,1]) < ussebba))[0],1])        
+plt.show()
+
+# +
+label_arg = label_arg_gmm
+
+for i in range(K):
+    plt.scatter(train_x[np.where((label_arg == i) & (np.abs(train_x[:,0]) < ussebba) & (np.abs(train_x[:,1]) < ussebba))[0],0],
+                train_x[np.where((label_arg == i) & (np.abs(train_x[:,0]) < ussebba) & (np.abs(train_x[:,1]) < ussebba))[0],1])        
+plt.show()
+
+# +
+label_arg = label_arg_hsmm
+
+for i in range(K):
+    plt.scatter(train_x[np.where((label_arg == i) & (np.abs(train_x[:,0]) < ussebba) & (np.abs(train_x[:,1]) < ussebba))[0],0],
+                train_x[np.where((label_arg == i) & (np.abs(train_x[:,0]) < ussebba) & (np.abs(train_x[:,1]) < ussebba))[0],1])        
+plt.show()
+# -
+
+plt.scatter(train_x[focus_ind1,0], train_x[focus_ind1,1])
+
+# +
+printmd("### 5. Correct number of labeling of GMM:")
+printmd("+ {0}/{1}".format(correct_num_skgmm, len(label_arg_hsmm)))
+
+printmd("### 5. Correct number of labeling of GMM:")
+printmd("+ {0}/{1}".format(correct_num_gmm, len(label_arg_hsmm)))
+
+printmd("### 6. Correct number of labeling of HSMM:")
+printmd("+ {0}/{1}".format(correct_num_hsmm, len(label_arg_hsmm)))
+
+printmd("### 7. Generalization error of GMM:")
+printmd("+ {0}".format(evaluate_log_loss(gmm_result, true_param, noise_data_num, test_x, true_logpdf, pred_logpdf_gmm)))
+
+printmd("### 8. Generalization error of HSMM:")
+printmd("+ {0}".format(evaluate_log_loss(hsmm_result, true_param, noise_data_num, test_x, true_logpdf, pred_logpdf_hsmm)))
+
+printmd("### 9. Data distribution labeled by GMM:")
+plot_scatter_with_label(train_x, label_arg_gmm,  K, noise_data_num)
+
+printmd("### 10. Data distribution labeled by HSMM:")
+plot_scatter_with_label(train_x, label_arg_hsmm,  K, noise_data_num)
+# -
+
+
+
+
+
+
+
+
 
 # ## 1. Cluster distribution is Gaussian distribution
 
@@ -528,7 +746,7 @@ learning_and_labeling()
 
 # ## 3. Cluster distribution is Laplace distribution
 
-logpdf_laplace = lambda x, mean, precision: laplace.logpdf(test_x, loc=mean, scale=1/precision).sum(axis=1)
+logpdf_laplace = lambda x, mean, precision: laplace.logpdf(test_x, loc=mean, scale=1/np.diag(precision)).sum(axis=1)
 true_logpdf = lambda x, param: logpdf_mixture_dist(x, param, logpdf_laplace)
 
 # +
@@ -557,7 +775,7 @@ learning_and_labeling()
 
 # ## 4. Cluster distribution is Gumbel distribution
 
-logpdf_gumbel = lambda x, mean, precision: gumbel_r.logpdf(test_x, loc=mean, scale=1/precision).sum(axis=1)
+logpdf_gumbel = lambda x, mean, precision: gumbel_r.logpdf(test_x, loc=mean, scale=1/np.diag(precision)).sum(axis=1)
 true_logpdf = lambda x, param: logpdf_mixture_dist(x, param, logpdf_gumbel)
 
 # +
@@ -586,7 +804,7 @@ learning_and_labeling()
 
 # ## 5. Cluster distribution is student distribution
 
-logpdf_t = lambda x, mean, precision: t.logpdf(test_x, df=1.5, loc=mean, scale=1/precision).sum(axis=1)
+logpdf_t = lambda x, mean, precision: t.logpdf(test_x, df=1.5, loc=mean, scale=1/np.diag(precision)).sum(axis=1)
 true_logpdf = lambda x, param: logpdf_mixture_dist(x, param, logpdf_t)
 
 # +
@@ -594,7 +812,7 @@ np.random.seed(data_seed)
 train_x = np.zeros((n, M))
 for i in range(n):
     for j in range(M):
-        train_x[i, j] = t.rvs(df = 1.5, loc=true_b[true_train_label_arg[i],j], scale=1/true_s[true_train_label_arg[i],j], size=1)
+        train_x[i, j] = t.rvs(df = 2, loc=true_b[true_train_label_arg[i],j], scale=1/true_s[true_train_label_arg[i],j], size=1)
 
 noise_data_num = math.ceil(n*true_delta)
 if noise_data_num > 0:
@@ -615,7 +833,7 @@ learning_and_labeling()
 
 # ## 6. Cluster distribution is Cauchy distribution
 
-logpdf_cauchy = lambda x, mean, precision: cauchy.logpdf(test_x, loc=mean, scale=1/precision).sum(axis=1)
+logpdf_cauchy = lambda x, mean, precision: cauchy.logpdf(test_x, loc=mean, scale=1/np.diag(precision)).sum(axis=1)
 true_logpdf = lambda x, param: logpdf_mixture_dist(x, param, logpdf_cauchy)
 
 # +
@@ -645,7 +863,7 @@ learning_and_labeling()
 # ## 7. Cluster distribution is Gamma distribution
 # + Remark: Actually support of gamma distribution is not whole real line, but scipy can generate data with loc on real value.
 
-logpdf_gamma = lambda x, mean, precision: gamma.logpdf(test_x, a=1, loc=mean, scale=1/precision).sum(axis=1)
+logpdf_gamma = lambda x, mean, precision: gamma.logpdf(test_x, a=1, loc=mean, scale=1/np.diag(precision)).sum(axis=1)
 true_logpdf = lambda x, param: logpdf_mixture_dist(x, param, logpdf_gamma)
 
 # +
@@ -674,7 +892,7 @@ learning_and_labeling()
 
 # ## 8. Cluster distribution is Skew Normal distribution
 
-logpdf_skewnormal = lambda x, mean, precision: skewnorm.logpdf(test_x, a=2, loc=mean, scale=1/precision).sum(axis=1)
+logpdf_skewnormal = lambda x, mean, precision: skewnorm.logpdf(test_x, a=2, loc=mean, scale=1/np.diag(precision)).sum(axis=1)
 true_logpdf = lambda x, param: logpdf_mixture_dist(x, param, logpdf_skewnormal)
 
 # +
@@ -704,7 +922,7 @@ learning_and_labeling()
 # ## 9. Cluster distribution is Parato distribution
 # + Parato distribution has inifite variance if $shape \leq 2$.
 
-logpdf_pareto = lambda x, mean, precision: pareto.logpdf(test_x, b=1.5, loc=mean, scale=1/precision).sum(axis=1)
+logpdf_pareto = lambda x, mean, precision: pareto.logpdf(test_x, b=1.5, loc=mean, scale=1/np.diag(precision)).sum(axis=1)
 true_logpdf = lambda x, param: logpdf_mixture_dist(x, param, logpdf_pareto)
 
 # +
