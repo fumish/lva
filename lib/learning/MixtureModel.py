@@ -1,12 +1,14 @@
 
 
+from sklearn.base import BaseEstimator
+from sklearn.base import DensityMixin
 """
 This is a library for probability distribution of mixture.
 Mainly this library focuses on Bayesian method to estimate the models.
 Hereafter, we use latex like notation for equations.
 Back slash is often occurs syntax error, so we describe each equation without back slash.
 """
-class HyperbolicSecantMixtureVB():
+class HyperbolicSecantMixtureVB(DensityMixin, BaseEstimator):
     """
     This class is to infer a hyperbolic secant mixture model (HSMM) by Variational Bayesian approach.
     # Model p(x|w):
@@ -83,7 +85,7 @@ class HyperbolicSecantMixtureVB():
         self.step = step
         pass
 
-    def fit_lva_hsmm(self, train_X):
+    def fit(self, train_X):
         """
         LVA for HSMM.
         The algorithm is described in the above cell.
@@ -109,13 +111,15 @@ class HyperbolicSecantMixtureVB():
         import math
         import numpy as np
         from lib.util.elemntary_function import logcosh
+        from scipy.special import gammaln, psi
 
         (n, M) = train_X.shape
         if self.learning_seed > 0:
             np.random.seed(self.learning_seed)
 
         ### Setting for static variable in the algorithm.
-        expand_x = np.repeat(train_X, self.K).reshape(n, M, self.K).transpose((0, 2, 1)) ### n * K * M data with the same matrix among 2nd dimension
+        expand_x = np.repeat(train_X, self.K).reshape(n, M, self.K).transpose((0, 2, 1))
+        ### n * K * M data with the same matrix among 2nd dimension
 
         min_energy = np.inf
         result = dict()
@@ -127,7 +131,7 @@ class HyperbolicSecantMixtureVB():
             ### Setting for initial value
             est_u_xi = np.random.dirichlet(alpha = np.ones(self.K), size=n)
             est_g_eta = np.abs(np.random.normal(size=(n,self.K,M)))
-            est_v_eta = - np.repeat(est_u_xi, M).reshape(n, self.K, M) * np.tanh(np.sqrt(est_g_eta)/2)/(4*np.sqrt(est_g_eta))
+            est_v_eta = -np.repeat(est_u_xi, M).reshape(n, self.K, M) * np.tanh(np.sqrt(est_g_eta)/2)/(4*np.sqrt(est_g_eta))
 
             ### Start learning.
             for ite in range(self.iteration):
@@ -159,7 +163,8 @@ class HyperbolicSecantMixtureVB():
                     if calc_ind > 0 and np.abs(energy[calc_ind] - energy[calc_ind-1]) < self.tol:
                         energy = energy[:(calc_ind)]
                         break
-
+                    pass
+                pass
             print(energy[-1])
             if energy[-1] < min_energy:
                 min_energy = energy[-1]
@@ -177,10 +182,48 @@ class HyperbolicSecantMixtureVB():
                 result["g_eta"] = est_g_eta
                 result["v_eta"] = est_v_eta
                 result["energy"] = energy
-
+            pass
         self.result_ = result
         return self
 
+    def predict_prob(self, test_X, log = False):
+        import numpy as np
+        n = test_X.shape[0]
+        K = len(param["ratio"])
+        loglik = np.zeros((n,K))
+        for k in range(K):
+            if param["scale"].ndim == 2:
+                loglik[:,k] = np.log(param["ratio"][k]) + component_log_dist(test_x, param["mean"][k,:],  param["scale"][k,:])
+            elif param["scale"].ndim == 3:
+                loglik[:,k] = np.log(param["ratio"][k]) + component_log_dist(test_x, param["mean"][k,:],  param["scale"][k,:,:])
+            else:
+                raise ValueError("Error precision, dimension of precision must be 2 or 3!")
+        max_loglik = loglik.max(axis = 1)
+        norm_loglik = loglik - np.repeat(max_loglik,K).reshape(n,K)
+        return (np.log(np.exp(norm_loglik).sum(axis = 1)) + max_loglik)
+
+    def score(self, test_X, test_Y = None):
+
+        pass
+    def get_params(self, deep = True):
+        return{
+               "K": self.K,
+               "pri_alpha": self.pri_alpha,
+               "pri_beta": self.pri_beta,
+               "pri_gamma":self.pri_gamma,
+               "pri_delta":self.pri_delta,
+               "iteration":self.iteration,
+               "restart_num":self.restart_num,
+               "learning_seed":self.learning_seed,
+               "tol":self.tol,
+               "step":self.step
+        }
+
+
+    def set_params(self, **params):
+        for params, value in parameters.items():
+            setattr(self,params, value)
+        return self
 
     pass
 
