@@ -136,10 +136,12 @@ def logcosh(x:np.ndarray):
     対数双曲線関数の計算
     + 普通にライブラリを呼ぶと、オーバーフローするのでその対策
     """
-    ret_val = -x + np.log((1 + np.exp(2*x))/2)
-    (row, col) = np.where(x > 0)
-    ret_val[row, col] = x[row, col] + np.log((1 + np.exp(-2*x[row,col]))/2)
-    return ret_val
+    return np.abs(x) + np.log((1 + np.exp(-2 * np.abs(x)))/2)
+    
+#     ret_val = -x + np.log((1 + np.exp(2*x))/2)
+#     (row, col) = np.where(x > 0)
+#     ret_val[row, col] = x[row, col] + np.log((1 + np.exp(-2*x[row,col]))/2)
+#     return ret_val
 
 def logpdf_mixture_dist(x:np.ndarray, param:dict, component_log_dist:Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray]):
     """
@@ -175,9 +177,7 @@ def fit_gmm_sklearn(train_X:np.ndarray, K:int,
                     pri_alpha = 0.1, pri_beta = 0.001, pri_gamma = 2, pri_delta = 2,
                     iteration = 1000, restart_num:int = 5, learning_seeds:list = None):
     """
-    LVA for GMM.
-    This is same with Variational Bayes inference for GMM.
-    Since the algorithm fails to local minima, the best estimator are chosen in several initial values.
+    Estimating GMM by sklearn library.
     
     + Input:
         + train_X: input data
