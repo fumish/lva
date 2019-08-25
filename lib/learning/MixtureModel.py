@@ -58,7 +58,9 @@ class HyperbolicSecantMixtureVB(DensityMixin, BaseEstimator):
     + sum_{k=1}^K sum_{j=1}^M bigl{ frac{1}{2} log frac{hat{beta}_{kj}}{beta_{kj}} + hat{gamma}_{kj} log hat{delta}_{kj} - gamma_{kj} log delta_{kj} - log Gamma(hat{gamma}_{kj}) + log Gamma(gamma_{kj}) bigr}
     """
 
-    def __init__(self, K:int = 3, phi_alpha:float = 0.1, pri_beta:float = 0.001, pri_gamma:float = 2, pri_delta:float = 2, iteration:int = 1000, restart_num:int = 5, learning_seed:int = -1, tol:float = 1e-5, step:int = 20):
+    def __init__(self, K:int = 3,
+                 pri_alpha:float = 0.1, pri_beta:float = 0.001, pri_gamma:float = 2, pri_delta:float = 2,
+                 iteration:int = 1000, restart_num:int = 5, learning_seed:int = -1, tol:float = 1e-5, step:int = 20):
         """
         Initialize the following parameters:
         1. pri_alpha: hyperparameter for prior distribution of symmetric Dirichlet distribution.
@@ -74,7 +76,7 @@ class HyperbolicSecantMixtureVB(DensityMixin, BaseEstimator):
             so by this parameter we avoid watching the value every time.
         """
         self.K = K
-        self.phi_alpha = phi_alpha
+        self.pri_alpha = pri_alpha
         self.pri_beta = pri_beta
         self.pri_gamma = pri_gamma
         self.pri_delta = pri_delta
@@ -156,7 +158,7 @@ class HyperbolicSecantMixtureVB(DensityMixin, BaseEstimator):
                 if ite % self.step == 0 or ite == self.iteration - 1:
                     calc_ind = ite % self.step if ite % self.step == 0 else -1
                     ### Calculate evaluation function
-                    energy[calc_ind] = (np.repeat(est_u_xi, M).reshape(n, K, M) * logcosh(sqrt_g_eta/2).sum() - (np.log(np.exp(norm_h_xi).sum(axis = 1)) + max_h_xi).sum() + (est_u_xi * est_h_xi).sum() + (est_v_eta * est_g_eta).sum()
+                    energy[calc_ind] =  np.repeat(est_u_xi, M).reshape(n, K, M) * logcosh(sqrt_g_eta/2).sum() - (np.log(np.exp(norm_h_xi).sum(axis = 1)) + max_h_xi).sum() + (est_u_xi * est_h_xi).sum() + (est_v_eta * est_g_eta).sum()
                     energy[calc_ind] += gammaln(est_alpha.sum()) - gammaln(self.K*self.pri_alpha) + (-gammaln(est_alpha) + gammaln(self.pri_alpha)).sum()
                     energy[calc_ind] += (np.log(est_beta/self.pri_beta)/2 + est_gamma * np.log(est_delta) - self.pri_gamma * np.log(self.pri_delta) - gammaln(est_gamma) + gammaln(self.pri_gamma)).sum()
 
@@ -171,7 +173,7 @@ class HyperbolicSecantMixtureVB(DensityMixin, BaseEstimator):
                 result["ratio"] = est_alpha / est_alpha.sum()
                 result["mean"] = est_m
                 result["precision"] = est_gamma / est_delta
-                result["scale"] = np.array([np.diag(est_gamma[k,:] / est_delta[k,:]) for k in range(K)])
+                result["scale"] = np.array([np.diag(est_gamma[k,:] / est_delta[k,:]) for k in range(self.K)])
                 result["alpha"] = est_alpha
                 result["beta"] = est_beta
                 result["mu"] = est_m
@@ -186,25 +188,41 @@ class HyperbolicSecantMixtureVB(DensityMixin, BaseEstimator):
         self.result_ = result
         return self
 
-    def predict_prob(self, test_X, log = False):
+    def predict_logproba(self, test_X):
         import numpy as np
         n = test_X.shape[0]
-        K = len(param["ratio"])
-        loglik = np.zeros((n,K))
-        for k in range(K):
-            if param["scale"].ndim == 2:
-                loglik[:,k] = np.log(param["ratio"][k]) + component_log_dist(test_x, param["mean"][k,:],  param["scale"][k,:])
+        loglik = np.zeros((n,self.K))
+        for k in range(self.K):
+            if self.result_["scale"].ndim == 2:
+                loglik[:,k] = np.log(self.result_["ratio"][k]) + self._logpdf_hypsecant(test_x, self.result_["mean"][k,:],  self.result_["scale"][k,:])
             elif param["scale"].ndim == 3:
-                loglik[:,k] = np.log(param["ratio"][k]) + component_log_dist(test_x, param["mean"][k,:],  param["scale"][k,:,:])
+                loglik[:,k] = np.log(self.result_["ratio"][k]) + self._logpdf_hypsecant(test_x, self.result_["mean"][k,:],  self.result_["scale"][k,:,:])
             else:
                 raise ValueError("Error precision, dimension of precision must be 2 or 3!")
         max_loglik = loglik.max(axis = 1)
-        norm_loglik = loglik - np.repeat(max_loglik,K).reshape(n,K)
+        norm_loglik = loglik - np.repeat(max_loglik,self.K).reshape(n,self.K)
         return (np.log(np.exp(norm_loglik).sum(axis = 1)) + max_loglik)
 
-    def score(self, test_X, test_Y = None):
+    def _logpdf_hypsecant(self, x, mean, precision):
+        """
+        Calculate \log p(x|w) = \sum_{j=1}^M \log(\frac{\sqrt{s_j}}{2\pi} 1/cosh(\sqrt{s_j}/2(x_j - b_j)))
+        Input:
+         + x: n*M
+         + mean: M
+         + precision :M*M
+        Output:
+         + n*M
+        """
+        from lib.util.elemntary_function import logcosh
+        import numpy as np
+        (n, M) = x.shape
+        expand_precision = np.repeat(np.diag(precision), n).reshape(M,n).T
+        y = np.sqrt(expand_precision)*(x - np.repeat(mean, n).reshape(M,n).T)/2
+        return(np.log(expand_precision)/2 - np.log(2*np.pi) - logcosh(y)).sum(axis = 1)
 
-        pass
+    def score(self, test_X, test_Y = None):
+        return self.predict_logproba(test_X)
+
     def get_params(self, deep = True):
         return{
                "K": self.K,
@@ -219,13 +237,10 @@ class HyperbolicSecantMixtureVB(DensityMixin, BaseEstimator):
                "step":self.step
         }
 
-
     def set_params(self, **params):
-        for params, value in parameters.items():
-            setattr(self,params, value)
+        for params, value in params.items():
+            setattr(self, params, value)
         return self
-
-    pass
 
 class GaussianMixtureModelVB():
 

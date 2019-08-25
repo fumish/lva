@@ -14,6 +14,8 @@
 #     name: python3
 # ---
 
+# %load_ext autoreload
+# %autoreload 2
 # %matplotlib inline
 
 # # HSMMの数値実験
@@ -81,6 +83,10 @@ from scipy.stats import norm, t, cauchy, laplace, gumbel_r, gamma, skewnorm, par
 from typing import Callable
 
 from sklearn.mixture import BayesianGaussianMixture
+
+import sys
+sys.path.append("../lib")
+from learning.MixtureModel import HyperbolicSecantMixtureVB
 
 
 # ## Used funtions
@@ -642,13 +648,21 @@ for data_seed in data_seeds:
         
         break
 
-data_seed
-
-experiment_grid
-
 for a in ParameterGrid(experiment_params):
     print(a)
     break
+
+for params, value in a["pri_params"].items():
+    setattr(hsmm_obj, params, value)
+
+a["pri_params"]
+
+hsmm_obj = HyperbolicSecantMixtureVB()
+hsmm_obj.set_params(params = a["pri_params"])
+
+hsmm_obj
+
+
 
 
 
