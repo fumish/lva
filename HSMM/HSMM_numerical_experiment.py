@@ -7,7 +7,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.4'
-#       jupytext_version: 1.1.3
+#       jupytext_version: 1.2.1
 #   kernelspec:
 #     display_name: Python 3
 #     language: python
@@ -17,6 +17,139 @@
 # %load_ext autoreload
 # %autoreload 2
 # %matplotlib inline
+
+# # HSMMの性能比較の数値実験
+
+from IPython.core.display import display, Markdown, Latex
+import math
+import numpy as np
+from scipy.special import gammaln, psi
+import matplotlib.pyplot as plt
+import seaborn as sns
+from scipy.stats import norm, t, cauchy, laplace, gumbel_r, gamma, skewnorm, pareto, multivariate_normal
+from typing import Callable
+
+from sklearn.mixture import BayesianGaussianMixture
+
+import sys
+sys.path.append("../lib")
+from learning.MixtureModel import HyperbolicSecantMixtureVB
+from learning.MixtureModel import GaussianMixtureModelVB
+from util.elementary_function import rgmm
+
+# # 問題設定
+
+# ## 真の分布の設定
+# + データ生成分布は変更しますが、混合比, 中心, scaleは同じものを流用
+
+true_ratio = np.array([0.33, 0.33, 0.34])
+true_delta = 0
+true_s = np.array([[1.5, 1.5], [0.5, 0.5], [1, 1]])
+true_b = np.array([[2, 4], [-4, -2], [0, 0]])
+true_param = dict()
+true_param["ratio"] = true_ratio
+true_param["mean"] = true_b
+true_param["precision"] = true_s
+true_param["scale"] = np.array([np.diag(1/np.sqrt(true_s[k,:])) for k in range(len(true_ratio))])
+K0 = len(true_ratio)
+M = true_b.shape[1]
+
+# ## Learning setting:
+
+# +
+### 学習データの数
+n = 400
+
+### テストデータの数
+N = 10000
+
+### データの出方の個数
+ndataset = 10
+
+### 事前分布のハイパーパラメータ
+pri_params = {
+    "pri_alpha": 0.1,
+    "pri_beta": 0.001,
+    "pri_gamma": M+2,
+    "pri_delta": 1
+}
+
+### データ生成の回数
+data_seed_start = 201907
+data_seeds = np.arange(start = data_seed_start, stop = data_seed_start + ndataset, step = 1)
+
+### 学習モデルの初期値の乱数 -> データseedにoffsetを加えたものを使う
+learning_num = 10
+learning_seed_offset = np.arange(learning_num)+1
+
+### 繰り返しアルゴリズムの繰り返し回数
+learning_iteration = 1000
+
+### 学習モデルのコンポーネントの数
+K = np.array([3, 5])
+# -
+
+# # 性能評価
+# + 1連の流れ
+#     1. データ生成する
+#     1. 学習を行う
+#     1. 精度評価を行う
+#     1. 1に戻って再度計算
+
+# # コンポーネントの分布が正規分布の場合
+
+for data_seed in data_seeds:    
+    ### データを生成する
+    (train_X, train_label, train_label_arg) = rgmm(true_ratio, true_b, true_s, size = n, data_seed = data_seed)
+    (test_X, test_label, test_label_arg) = rgmm(true_ratio, true_b, true_s, size = N)
+    break
+
+
+gmm_obj = GaussianMixtureModelVB(iteration = 1000, step=2)
+
+a = 0
+if a == 0: print("aa")
+
+true_train_label = np.random.multinomial(n = 1, pvals = true_ratio, size = n)
+true_train_label_arg = np.argmax(true_train_label, axis = 1)
+# true_test_label = np.random.multinomial(n = 1, pvals = true_ratio, size = test_data_num)
+# true_test_label_arg = np.argmax(true_test_label, axis = 1)
+
+
+
+# +
+np.random.seed(data_seed)
+train_x = np.zeros((n, M))
+for i in range(n):
+    for j in range(M):
+        train_x[i, j] = t.rvs(df = 3, loc=true_b[true_train_label_arg[i],j], scale=1/true_s[true_train_label_arg[i],j], size=1)
+
+noise_data_num = math.ceil(n*true_delta)
+if noise_data_num > 0:
+    train_x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+    
+np.random.seed(test_seed)
+test_x = np.zeros((test_data_num, M))
+for i in range(test_data_num):
+    for j in range(M):
+        test_x[i, j] = t.rvs(df = 1.5, loc=true_b[true_test_label_arg[i],j], scale=1/true_s[true_test_label_arg[i],j], size=1)
+
+noise_data_num = math.ceil(test_data_num*true_delta)
+if noise_data_num > 0:
+    test_x[-noise_data_num:,:] = np.random.uniform(low=-30, high=30, size = noise_data_num*M).reshape(noise_data_num,M)
+# -
+
+
+
+
+
+
+
+
+
+
+
+
 
 # # HSMMの数値実験
 # 1. 比較対象:
@@ -72,22 +205,6 @@
 #     + $\overline{F}_{\xi, \eta}(x^n) = - \phi(h(\xi)) - \psi(g(\eta)) + u(\xi) \cdot h(\xi) + v(\eta) \cdot g(\eta) $  
 #         $+ nM \log 2 \pi + \log \Gamma(\sum_{l = 1}^K \hat{\alpha}_l) - \log \Gamma({\sum_{l = 1}^K\alpha}_l) + \sum_{k=1}^K \log \frac{\Gamma(\alpha_k)}{\Gamma(\hat{\alpha}_k)}$  
 #         $+ \sum_{k=1}^K \sum_{j=1}^M \bigl\{ \frac{1}{2} \log \frac{\hat{\beta}_{kj}}{\beta_{kj}} + \hat{\gamma}_{kj} \log \hat{\delta}_{kj} - \gamma_{kj} \log \delta_{kj} - \log \Gamma(\hat{\gamma}_{kj}) + \log \Gamma(\gamma_{kj}) \bigr\}$
-
-from IPython.core.display import display, Markdown, Latex
-import math
-import numpy as np
-from scipy.special import gammaln, psi
-import matplotlib.pyplot as plt
-import seaborn as sns
-from scipy.stats import norm, t, cauchy, laplace, gumbel_r, gamma, skewnorm, pareto, multivariate_normal
-from typing import Callable
-
-from sklearn.mixture import BayesianGaussianMixture
-
-import sys
-sys.path.append("../lib")
-from learning.MixtureModel import HyperbolicSecantMixtureVB
-
 
 # ## Used funtions
 
