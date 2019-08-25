@@ -6,6 +6,7 @@ This module is a set of useful function, while famous library does not seem to c
 
 ## 3rd party libraries
 import numpy as np
+from scipy.stats import multivariate_normal
 
 ## local libraries
 
@@ -17,7 +18,42 @@ def logcosh(x:np.ndarray):
     """
     return np.abs(x) + np.log((1 + np.exp(-2 * np.abs(x)))/2)
 
-def rgmm(ratio, mean, precision, size=1, data_seed = -1):
+class GaussianMixtureModel(object):
+    """
+    This is class of Gaussian mixture model
+    Like random variable of scipy.stats, this class has rvs, pdf, logpdf, and so on.
+    """
+
+    def __init__(self):
+        pass
+
+    def rvs(self, ratio:np.ndarray, mean:np.ndarray, precision:np.ndarray, size:int=1, data_seed:int=-1):
+        if data_seed > 0: np.random.seed(data_seed)
+        data_label = np.random.multinomial(n = 1, pvals = ratio, size = size)
+        data_label_arg = np.argmax(data_label, axis = 1)
+        X = np.array([multivariate_normal.rvs(mean=mean[data_label_arg[i],:], cov=np.diag(1/precision[data_label_arg[i],:]), size=1) for i in range(size)])
+        return (X, data_label, data_label_arg)
+
+    def logpdf(self, X:np.ndarray, ratio:np.ndarray, mean:np.ndarray, precision:np.ndarray):
+        return np.exp(self.logpdf(X, ratio, mean, precision))
+
+    def logpdf(self, X:np.ndarray, ratio:np.ndarray, mean:np.ndarray, precision:np.ndarray):
+        n = X.shape[0]
+        K = len(ratio)
+
+        loglik = np.zeros((n,K))
+        for k in range(K):
+            if precision.ndim == 2:
+                loglik[:,k] = np.log(ratio[k]) + multivariate_normal.logpdf(X, mean[k,:], np.diag(1/precision[k,:]))
+            elif precision.ndim == 3:
+                loglik[:,k] = np.log(ratio[k]) + multivariate_normal.logpdf(X, mean[k,:],  1/precision[k,:,:])
+            else:
+                raise ValueError("Error precision, dimension of precision must be 2 or 3!")
+        max_loglik = loglik.max(axis = 1)
+        norm_loglik = loglik - np.repeat(max_loglik,K).reshape(n,K)
+        return (np.log(np.exp(norm_loglik).sum(axis = 1)) + max_loglik).sum()
+
+def rgmm(ratio:np.ndarray, mean:np.ndarray, precision:np.ndarray, size:int=1, data_seed:int = -1):
     """
     Generate data following to mixture of a Gaussian distribution with ratio, mean, and precision.
     Assigning the data size and seed is admissible for this function.

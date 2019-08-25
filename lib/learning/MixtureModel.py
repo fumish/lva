@@ -97,7 +97,7 @@ class HyperbolicSecantMixtureVB(DensityMixin, BaseEstimator):
         self.step = step
         pass
 
-    def fit(self, train_X, y=None):
+    def fit(self, train_X:np.ndarray, y:np.ndarray=None):
         """
         LVA for HSMM.
         The algorithm is described in the above cell.
@@ -179,7 +179,7 @@ class HyperbolicSecantMixtureVB(DensityMixin, BaseEstimator):
                 result["ratio"] = est_alpha / est_alpha.sum()
                 result["mean"] = est_m
                 result["precision"] = est_gamma / est_delta
-                result["scale"] = np.array([np.diag(est_gamma[k,:] / est_delta[k,:]) for k in range(self.K)])
+                result["scale"] = np.array([np.diag(est_delta[k,:] / est_gamma[k,:]) for k in range(self.K)])
                 result["alpha"] = est_alpha
                 result["beta"] = est_beta
                 result["mu"] = est_m
@@ -191,24 +191,24 @@ class HyperbolicSecantMixtureVB(DensityMixin, BaseEstimator):
                 result["v_eta"] = est_v_eta
                 result["energy"] = energy
             pass
-        self.result_ = result
+        self._result = result
         return self
 
-    def predict_logproba(self, test_X):
+    def predict_logproba(self, test_X:np.ndarray):
         n = test_X.shape[0]
         loglik = np.zeros((n,self.K))
         for k in range(self.K):
-            if self.result_["scale"].ndim == 2:
-                loglik[:,k] = np.log(self.result_["ratio"][k]) + self._logpdf_hypsecant(test_x, self.result_["mean"][k,:],  self.result_["scale"][k,:])
-            elif param["scale"].ndim == 3:
-                loglik[:,k] = np.log(self.result_["ratio"][k]) + self._logpdf_hypsecant(test_x, self.result_["mean"][k,:],  self.result_["scale"][k,:,:])
+            if self._result["precision"].ndim == 2:
+                loglik[:,k] = np.log(self._result["ratio"][k]) + self._logpdf_hypsecant(test_X, self._result["mean"][k,:],  np.diag(self._result["precision"][k,:]))
+            elif self._result["precision"].ndim == 3:
+                loglik[:,k] = np.log(self._result["ratio"][k]) + self._logpdf_hypsecant(test_X, self._result["mean"][k,:],  self._result["precision"][k,:,:])
             else:
                 raise ValueError("Error precision, dimension of precision must be 2 or 3!")
         max_loglik = loglik.max(axis = 1)
         norm_loglik = loglik - np.repeat(max_loglik,self.K).reshape(n,self.K)
-        return (np.log(np.exp(norm_loglik).sum(axis = 1)) + max_loglik)
+        return (np.log(np.exp(norm_loglik).sum(axis = 1)) + max_loglik).sum()
 
-    def _logpdf_hypsecant(self, x, mean, precision):
+    def _logpdf_hypsecant(self, x:np.ndarray, mean:np.ndarray, precision:np.ndarray):
         """
         Calculate \log p(x|w) = \sum_{j=1}^M \log(\frac{\sqrt{s_j}}{2\pi} 1/cosh(\sqrt{s_j}/2(x_j - b_j)))
         Input:
@@ -223,7 +223,7 @@ class HyperbolicSecantMixtureVB(DensityMixin, BaseEstimator):
         y = np.sqrt(expand_precision)*(x - np.repeat(mean, n).reshape(M,n).T)/2
         return(np.log(expand_precision)/2 - np.log(2*np.pi) - logcosh(y)).sum(axis = 1)
 
-    def score(self, test_X, test_Y = None):
+    def score(self, test_X:np.ndarray, test_Y:np.ndarray = None):
         return self.predict_logproba(test_X)
 
     def get_params(self, deep = True):
@@ -280,7 +280,7 @@ class GaussianMixtureModelVB(DensityMixin, BaseEstimator):
         self.step = step
         pass
 
-    def fit(self, train_X, y=None):
+    def fit(self, train_X:np.ndarray, y:np.ndarray=None):
         (n, M) = train_X.shape
         if self.learning_seed > 0:
             np.random.seed(self.learning_seed)
@@ -333,7 +333,7 @@ class GaussianMixtureModelVB(DensityMixin, BaseEstimator):
                 result["ratio"] = est_alpha / est_alpha.sum()
                 result["mean"] = est_m
                 result["precision"] = est_gamma / est_delta
-                result["scale"] = np.array([np.diag(est_gamma[k,:] / est_delta[k,:]) for k in range(self.K)])
+                result["scale"] = np.array([np.diag(est_delta[k,:] / est_gamma[k,:]) for k in range(self.K)])
                 result["alpha"] = est_alpha
                 result["beta"] = est_beta
                 result["mu"] = est_m
@@ -343,24 +343,24 @@ class GaussianMixtureModelVB(DensityMixin, BaseEstimator):
                 result["u_xi"] = est_u_xi
                 result["energy"] = energy
             pass
-        self.result_ = result
+        self._result = result
 
 
-    def predict_logproba(self, test_X):
+    def predict_logproba(self, test_X:np.ndarray):
         n = test_X.shape[0]
         loglik = np.zeros((n,self.K))
         for k in range(self.K):
-            if self.result_["scale"].ndim == 2:
-                loglik[:,k] = np.log(self.result_["ratio"][k]) + multivariate_normal.logpdf(test_x, self.result_["mean"][k,:],  self.result_["scale"][k,:])
-            elif param["scale"].ndim == 3:
-                loglik[:,k] = np.log(self.result_["ratio"][k]) + multivariate_normal.logpdf(test_x, self.result_["mean"][k,:],  self.result_["scale"][k,:,:])
+            if self._result["scale"].ndim == 2:
+                loglik[:,k] = np.log(self._result["ratio"][k]) + multivariate_normal.logpdf(test_X, self._result["mean"][k,:],  np.diag(self._result["scale"][k,:]))
+            elif self._result["scale"].ndim == 3:
+                loglik[:,k] = np.log(self._result["ratio"][k]) + multivariate_normal.logpdf(test_X, self._result["mean"][k,:],  self._result["scale"][k,:,:])
             else:
                 raise ValueError("Error precision, dimension of precision must be 2 or 3!")
         max_loglik = loglik.max(axis = 1)
         norm_loglik = loglik - np.repeat(max_loglik,self.K).reshape(n,self.K)
-        return (np.log(np.exp(norm_loglik).sum(axis = 1)) + max_loglik)
+        return (np.log(np.exp(norm_loglik).sum(axis = 1)) + max_loglik).sum()
 
-    def score(self, test_X, test_Y = None):
+    def score(self, test_X:np.ndarray, test_Y:np.ndarray = None):
         return self.predict_logproba(test_X)
 
     def get_params(self, deep = True):

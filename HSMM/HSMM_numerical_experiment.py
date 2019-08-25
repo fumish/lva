@@ -35,7 +35,7 @@ import sys
 sys.path.append("../lib")
 from learning.MixtureModel import HyperbolicSecantMixtureVB
 from learning.MixtureModel import GaussianMixtureModelVB
-from util.elementary_function import rgmm
+from util.elementary_function import GaussianMixtureModel
 
 # # 問題設定
 
@@ -100,12 +100,28 @@ K = np.array([3, 5])
 
 for data_seed in data_seeds:    
     ### データを生成する
-    (train_X, train_label, train_label_arg) = rgmm(true_ratio, true_b, true_s, size = n, data_seed = data_seed)
-    (test_X, test_label, test_label_arg) = rgmm(true_ratio, true_b, true_s, size = N)
+    (train_X, train_label, train_label_arg) = GaussianMixtureModel().rvs(true_ratio, true_b, true_s, size = n, data_seed = data_seed)
+    (test_X, test_label, test_label_arg) = GaussianMixtureModel().rvs(true_ratio, true_b, true_s, size = N)
     break
 
 
+# +
 gmm_obj = GaussianMixtureModelVB(iteration = 1000, step=2)
+
+gmm_obj.fit(train_X)
+# -
+
+(GaussianMixtureModel().logpdf(test_X, true_ratio, true_b, true_s) - gmm_obj.predict_logproba(test_X))/N
+
+# +
+hsmm_obj = HyperbolicSecantMixtureVB(iteration = 1000, step=2)
+
+hsmm_obj.fit(train_X)
+# -
+
+hsmm_obj._result
+
+(GaussianMixtureModel().logpdf(test_X, true_ratio, true_b, true_s) - hsmm_obj.predict_logproba(test_X))/N
 
 a = 0
 if a == 0: print("aa")
@@ -517,7 +533,7 @@ def fit_lva_hsmm(train_X:np.ndarray, K:int,
             result["ratio"] = est_alpha / est_alpha.sum()
             result["mean"] = est_m
             result["precision"] = est_gamma / est_delta
-            result["scale"] = np.array([np.diag(est_gamma[k,:] / est_delta[k,:]) for k in range(K)])
+            result["scale"] = np.array([np.diag(est_delta[k,:] / est_gamma[k,:]) for k in range(K)])
             result["alpha"] = est_alpha
             result["beta"] = est_beta
             result["mu"] = est_m
