@@ -1,3 +1,6 @@
+# ** This repository is merged into LearningModels, and no longer updated. **
+
+
 # LVA
 Learning library for local variational approximation (LVA).
 LVA is a method to approximate the Bayesian posterior distribution by bounding a joint distribution.  
