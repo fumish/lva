@@ -1,4 +1,18 @@
+""" Mixture Models """
+## standard libraries
+import math
+import itertools
 
+## 3rd party libraries
+import numpy as np
+from scipy.special import gammaln, psi
+from scipy.stats import multivariate_normal
+from sklearn.base import BaseEstimator
+from sklearn.base import DensityMixin
+from sklearn.utils.validation import check_is_fitted
+
+## local libraries
+from util.elementary_function import logcosh
 
 """
 This is a library for probability distribution of mixture.
@@ -6,7 +20,7 @@ Mainly this library focuses on Bayesian method to estimate the models.
 Hereafter, we use latex like notation for equations.
 Back slash is often occurs syntax error, so we describe each equation without back slash.
 """
-class HyperbolicSecantMixtureVB():
+class HyperbolicSecantMixtureVB(DensityMixin, BaseEstimator):
     """
     This class is to infer a hyperbolic secant mixture model (HSMM) by Variational Bayesian approach.
     # Model p(x|w):
@@ -56,7 +70,9 @@ class HyperbolicSecantMixtureVB():
     + sum_{k=1}^K sum_{j=1}^M bigl{ frac{1}{2} log frac{hat{beta}_{kj}}{beta_{kj}} + hat{gamma}_{kj} log hat{delta}_{kj} - gamma_{kj} log delta_{kj} - log Gamma(hat{gamma}_{kj}) + log Gamma(gamma_{kj}) bigr}
     """
 
-    def __init__(self, K:int = 3, phi_alpha:float = 0.1, pri_beta:float = 0.001, pri_gamma:float = 2, pri_delta:float = 2, iteration:int = 1000, restart_num:int = 5, learning_seed:int = -1, tol:float = 1e-5, step:int = 20):
+    def __init__(self, K:int = 3,
+                 pri_alpha:float = 0.1, pri_beta:float = 0.001, pri_gamma:float = 2, pri_delta:float = 2,
+                 iteration:int = 1000, restart_num:int = 5, learning_seed:int = -1, tol:float = 1e-5, step:int = 20, is_trace:bool = False):
         """
         Initialize the following parameters:
         1. pri_alpha: hyperparameter for prior distribution of symmetric Dirichlet distribution.
@@ -72,7 +88,7 @@ class HyperbolicSecantMixtureVB():
             so by this parameter we avoid watching the value every time.
         """
         self.K = K
-        self.phi_alpha = phi_alpha
+        self.pri_alpha = pri_alpha
         self.pri_beta = pri_beta
         self.pri_gamma = pri_gamma
         self.pri_delta = pri_delta
@@ -81,9 +97,10 @@ class HyperbolicSecantMixtureVB():
         self.learning_seed = learning_seed
         self.tol = tol
         self.step = step
+        self.is_trace = is_trace
         pass
 
-    def fit_lva_hsmm(self, train_X):
+    def fit(self, train_X:np.ndarray, y:np.ndarray=None):
         """
         LVA for HSMM.
         The algorithm is described in the above cell.
@@ -106,28 +123,25 @@ class HyperbolicSecantMixtureVB():
                 10. energy: Value of the best evaluation function.
                 11. seed: Value of the best learning seed.
         """
-        import math
-        import numpy as np
-        from lib.util.elemntary_function import logcosh
 
         (n, M) = train_X.shape
         if self.learning_seed > 0:
             np.random.seed(self.learning_seed)
 
         ### Setting for static variable in the algorithm.
-        expand_x = np.repeat(train_X, self.K).reshape(n, M, self.K).transpose((0, 2, 1)) ### n * K * M data with the same matrix among 2nd dimension
+        expand_x = np.repeat(train_X, self.K).reshape(n, M, self.K).transpose((0, 2, 1))
+        ### n * K * M data with the same matrix among 2nd dimension
 
         min_energy = np.inf
         result = dict()
 
         for restart in range(self.restart_num):
-            ### Set learning seed if learning_seeds is specified.
-
-            energy = np.zeros(np.ceil(self.iteration/self.step)+1)
+            energy = np.zeros(np.floor(self.iteration/self.step).astype(int))
+            calc_ind = 0
             ### Setting for initial value
             est_u_xi = np.random.dirichlet(alpha = np.ones(self.K), size=n)
             est_g_eta = np.abs(np.random.normal(size=(n,self.K,M)))
-            est_v_eta = - np.repeat(est_u_xi, M).reshape(n, self.K, M) * np.tanh(np.sqrt(est_g_eta)/2)/(4*np.sqrt(est_g_eta))
+            est_v_eta = -np.repeat(est_u_xi, M).reshape(n, self.K, M) * np.tanh(np.sqrt(est_g_eta)/2)/(4*np.sqrt(est_g_eta))
 
             ### Start learning.
             for ite in range(self.iteration):
@@ -149,24 +163,26 @@ class HyperbolicSecantMixtureVB():
                 norm_h_xi = est_h_xi - np.repeat(max_h_xi, self.K).reshape(n,self.K)
                 est_u_xi = np.exp(norm_h_xi) / np.repeat(np.exp(norm_h_xi).sum(axis = 1), self.K).reshape(n, self.K)
 
-                if ite % self.step == 0 or ite == self.iteration - 1:
-                    calc_ind = ite % self.step if ite % self.step == 0 else -1
+                if ite % self.step == 0:
                     ### Calculate evaluation function
-                    energy[calc_ind] = (np.repeat(est_u_xi, M).reshape(n, K, M) * logcosh(sqrt_g_eta/2).sum() - (np.log(np.exp(norm_h_xi).sum(axis = 1)) + max_h_xi).sum() + (est_u_xi * est_h_xi).sum() + (est_v_eta * est_g_eta).sum()
+                    energy[calc_ind] =  (np.repeat(est_u_xi, M).reshape(n, self.K, M) * logcosh(sqrt_g_eta/2)).sum() - (np.log(np.exp(norm_h_xi).sum(axis = 1)) + max_h_xi).sum() + (est_u_xi * est_h_xi).sum() + (est_v_eta * est_g_eta).sum()
                     energy[calc_ind] += gammaln(est_alpha.sum()) - gammaln(self.K*self.pri_alpha) + (-gammaln(est_alpha) + gammaln(self.pri_alpha)).sum()
                     energy[calc_ind] += (np.log(est_beta/self.pri_beta)/2 + est_gamma * np.log(est_delta) - self.pri_gamma * np.log(self.pri_delta) - gammaln(est_gamma) + gammaln(self.pri_gamma)).sum()
 
                     if calc_ind > 0 and np.abs(energy[calc_ind] - energy[calc_ind-1]) < self.tol:
-                        energy = energy[:(calc_ind)]
+                        energy = energy[:calc_ind]
                         break
-
-            print(energy[-1])
+                    calc_ind += 1
+                    pass
+                pass
+            # energy = energy[:calc_ind]
+            if self.is_trace: print(energy[-1])
             if energy[-1] < min_energy:
                 min_energy = energy[-1]
                 result["ratio"] = est_alpha / est_alpha.sum()
                 result["mean"] = est_m
                 result["precision"] = est_gamma / est_delta
-                result["scale"] = np.array([np.diag(est_gamma[k,:] / est_delta[k,:]) for k in range(K)])
+                result["scale"] = np.array([np.diag(est_delta[k,:] / est_gamma[k,:]) for k in range(self.K)])
                 result["alpha"] = est_alpha
                 result["beta"] = est_beta
                 result["mu"] = est_m
@@ -177,13 +193,230 @@ class HyperbolicSecantMixtureVB():
                 result["g_eta"] = est_g_eta
                 result["v_eta"] = est_v_eta
                 result["energy"] = energy
-
+            pass
         self.result_ = result
         return self
 
+    def predict_logproba(self, test_X:np.ndarray):
+        check_is_fitted(self, "result_")
+        n = test_X.shape[0]
+        loglik = np.zeros((n,self.K))
+        for k in range(self.K):
+            if self.result_["precision"].ndim == 2:
+                loglik[:,k] = np.log(self.result_["ratio"][k]) + self._logpdf_hypsecant(test_X, self.result_["mean"][k,:],  np.diag(self.result_["precision"][k,:]))
+            elif self.result_["precision"].ndim == 3:
+                loglik[:,k] = np.log(self.result_["ratio"][k]) + self._logpdf_hypsecant(test_X, self.result_["mean"][k,:],  self.result_["precision"][k,:,:])
+            else:
+                raise ValueError("Error precision, dimension of precision must be 2 or 3!")
+        max_loglik = loglik.max(axis = 1)
+        norm_loglik = loglik - np.repeat(max_loglik,self.K).reshape(n,self.K)
+        return (np.log(np.exp(norm_loglik).sum(axis = 1)) + max_loglik).sum()
 
-    pass
+    def _logpdf_hypsecant(self, x:np.ndarray, mean:np.ndarray, precision:np.ndarray):
+        """
+        Calculate \log p(x|w) = \sum_{j=1}^M \log(\frac{\sqrt{s_j}}{2\pi} 1/cosh(\sqrt{s_j}/2(x_j - b_j)))
+        Input:
+         + x: n*M
+         + mean: M
+         + precision :M*M
+        Output:
+         + n*M
+        """
+        (n, M) = x.shape
+        expand_precision = np.repeat(np.diag(precision), n).reshape(M,n).T
+        y = np.sqrt(expand_precision)*(x - np.repeat(mean, n).reshape(M,n).T)/2
+        return(np.log(expand_precision)/2 - np.log(2*np.pi) - logcosh(y)).sum(axis = 1)
 
-class GaussianMixtureModelVB():
+    def score(self, test_X:np.ndarray, test_Y:np.ndarray = None):
+        return self.predict_logproba(test_X)
 
-    pass
+    def score_clustering(self, true_label_arg:np.ndarray):
+    """
+    0-1損失によるクラスタ分布の評価
+    1つのデータセットに対する評価で、ラベルの一致数の最大値の平均値を計算する
+    + 入力:
+        1. true_label_arg: 真のラベル番号
+    + 出力:
+        1. max_correct_num: ラベルの最大一致数
+        2. max_perm: 最大一致数を与える置換
+        3. max_est_label_arg: 最大の一致数を与えるラベルの番号
+    """
+    K = len(self.result_["ratio"])
+
+    est_label_prob = self.result_["u_xi"]
+    target_label_arg = true_label_arg
+    est_label_arg = np.argmax(est_label_prob, axis = 1)
+
+    target_label_arg = true_label_arg
+
+    max_correct_num = 0
+    for perm in list(itertools.permutations(range(K), K)):
+        permed_est_label_arg = est_label_arg.copy()
+        for i in range(len(perm)):
+            permed_est_label_arg[est_label_arg == i] = perm[i]
+        correct_num = (permed_est_label_arg == target_label_arg).sum()
+        if correct_num > max_correct_num:
+            max_correct_num = correct_num
+            max_perm = perm
+            max_est_label_arg = permed_est_label_arg
+    return (max_correct_num, max_perm, max_est_label_arg)
+
+
+
+    def get_params(self, deep = True):
+        return{
+               "K": self.K,
+               "pri_alpha": self.pri_alpha,
+               "pri_beta": self.pri_beta,
+               "pri_gamma":self.pri_gamma,
+               "pri_delta":self.pri_delta,
+               "iteration":self.iteration,
+               "restart_num":self.restart_num,
+               "learning_seed":self.learning_seed,
+               "tol":self.tol,
+               "step":self.step
+        }
+
+    def set_params(self, **params):
+        for params, value in params.items():
+            setattr(self, params, value)
+        return self
+
+class GaussianMixtureModelVB(DensityMixin, BaseEstimator):
+    """
+    Gaussian Mixture with Variational Bayes.
+    This class is created to compare with the HSMM, whereas sklearn has already implemented the estimator.
+    """
+
+    def __init__(self, K:int = 3,
+                 pri_alpha:float = 0.1, pri_beta:float = 0.001, pri_gamma:float = 2, pri_delta:float = 2,
+                 iteration:int = 1000, restart_num:int = 5, learning_seed:int = -1, tol:float = 1e-5, step:int = 20, is_trace = False):
+        """
+        Initialize the following parameters:
+        1. pri_alpha: hyperparameter for prior distribution of symmetric Dirichlet distribution.
+        2. pri_beta: hyperparameter for prior distribution of Normal distribution for inverse variance.
+        3. pri_gamma: hyperparameter for prior distribution of Gamma distribution for shape parameter.
+        4. pri_delta: hyperparameter for prior distribution of Gamma distribution for rate parameter.
+        5. iteration: Number of iteration.
+        6. restart_num: Number of restart of inital values.
+        7. learning_seed: Seed for initial values.
+        8. tol: tolerance to stop the algorithm
+        9. step: interval to calculate the objective function
+            Note: Since evaluating the objective function is a little bit heavy (roughly it may have O(n*M*K)),
+            so by this parameter we avoid watching the value every time.
+        """
+        self.K = K
+        self.pri_alpha = pri_alpha
+        self.pri_beta = pri_beta
+        self.pri_gamma = pri_gamma
+        self.pri_delta = pri_delta
+        self.iteration = iteration
+        self.restart_num = restart_num
+        self.learning_seed = learning_seed
+        self.tol = tol
+        self.step = step
+        self.is_trace = is_trace
+        pass
+
+    def fit(self, train_X:np.ndarray, y:np.ndarray=None):
+        (n, M) = train_X.shape
+        if self.learning_seed > 0:
+            np.random.seed(self.learning_seed)
+
+        ### Setting for static variable in the algorithm.
+        expand_x = np.repeat(train_X, self.K).reshape(n, M, self.K).transpose((0, 2, 1)) ### n * K * M data with the same matrix among 2nd dimension
+
+        min_energy = np.inf
+        result = dict()
+
+        for restart in range(self.restart_num):
+
+            energy = np.zeros(np.floor(self.iteration/self.step).astype(int))
+            calc_ind = 0
+            ### Setting for initial value
+            est_u_xi = np.random.dirichlet(alpha = np.ones(self.K), size=n)
+
+            ### Start learning.
+            for ite in range(self.iteration):
+                ### Update posterior distribution of parameter.
+                est_alpha = self.pri_alpha + est_u_xi.sum(axis = 0)
+                est_beta = np.repeat(self.pri_beta + est_u_xi.sum(axis = 0), M).reshape(self.K,M)
+                est_m = est_u_xi.T @ train_X / est_beta
+                est_gamma = np.repeat(self.pri_gamma + est_u_xi.sum(axis = 0)/2, M).reshape(self.K,M)
+                est_delta = self.pri_delta + est_u_xi.T @ (train_X**2) /2 - est_beta / 2 * est_m**2
+
+                ### Update posterior distribution of latent variable
+                est_g_eta = np.repeat(est_gamma / est_delta, n).reshape(self.K,M,n).transpose((2,0,1)) * (expand_x - np.repeat(est_m,n).reshape(self.K,M,n).transpose((2,0,1)))**2 + 1/np.repeat(est_beta, n).reshape(self.K,M,n).transpose((2,0,1))
+                est_h_xi = -M/2*np.log(2*np.pi) + np.repeat(psi(est_alpha) - psi(est_alpha.sum()) + (psi(est_gamma) - np.log(est_delta)).sum(axis = 1)/2, n).reshape(self.K,n).T - est_g_eta.sum(axis = 2)/2
+                max_h_xi = est_h_xi.max(axis = 1)
+                norm_h_xi = est_h_xi - np.repeat(max_h_xi,self.K).reshape(n,self.K)
+                est_u_xi = np.exp(norm_h_xi) / np.repeat(np.exp(norm_h_xi).sum(axis = 1), self.K).reshape(n,self.K)
+
+                ### Calculate evaluation function
+                if ite % self.step == 0 or ite == self.iteration - 1:
+                    ### Calculate evaluation function
+                    energy[calc_ind] =  -(np.log(np.exp(norm_h_xi).sum(axis = 1)) + max_h_xi).sum() + (est_u_xi * est_h_xi).sum()
+                    energy[calc_ind] += gammaln(est_alpha.sum()) - gammaln(self.K*self.pri_alpha) + (-gammaln(est_alpha) + gammaln(self.pri_alpha)).sum()
+                    energy[calc_ind] += (np.log(est_beta/self.pri_beta)/2 + est_gamma * np.log(est_delta) - self.pri_gamma * np.log(self.pri_delta) - gammaln(est_gamma) + gammaln(self.pri_gamma)).sum()
+
+                    if calc_ind > 0 and np.abs(energy[calc_ind] - energy[calc_ind-1]) < self.tol:
+                        energy = energy[:calc_ind]
+                        break
+                    calc_ind += 1
+                    pass
+                pass
+            if self.is_trace: print(energy[-1])
+            if energy[-1] < min_energy:
+                min_energy = energy[-1]
+                result["ratio"] = est_alpha / est_alpha.sum()
+                result["mean"] = est_m
+                result["precision"] = est_gamma / est_delta
+                result["scale"] = np.array([np.diag(est_delta[k,:] / est_gamma[k,:]) for k in range(self.K)])
+                result["alpha"] = est_alpha
+                result["beta"] = est_beta
+                result["mu"] = est_m
+                result["gamma"] = est_gamma
+                result["delta"] = est_delta
+                result["h_xi"] = est_h_xi
+                result["u_xi"] = est_u_xi
+                result["energy"] = energy
+            pass
+        self.result_ = result
+
+
+    def predict_logproba(self, test_X:np.ndarray):
+        check_is_fitted(self, "result_")
+        n = test_X.shape[0]
+        loglik = np.zeros((n,self.K))
+        for k in range(self.K):
+            if self.result_["scale"].ndim == 2:
+                loglik[:,k] = np.log(self.result_["ratio"][k]) + multivariate_normal.logpdf(test_X, self.result_["mean"][k,:],  np.diag(self.result_["scale"][k,:]))
+            elif self.result_["scale"].ndim == 3:
+                loglik[:,k] = np.log(self.result_["ratio"][k]) + multivariate_normal.logpdf(test_X, self.result_["mean"][k,:],  self.result_["scale"][k,:,:])
+            else:
+                raise ValueError("Error precision, dimension of precision must be 2 or 3!")
+        max_loglik = loglik.max(axis = 1)
+        norm_loglik = loglik - np.repeat(max_loglik,self.K).reshape(n,self.K)
+        return (np.log(np.exp(norm_loglik).sum(axis = 1)) + max_loglik).sum()
+
+    def score(self, test_X:np.ndarray, test_Y:np.ndarray = None):
+        return self.predict_logproba(test_X)
+
+    def get_params(self, deep = True):
+        return{
+                    "K": self.K,
+                    "pri_alpha": self.pri_alpha,
+                    "pri_beta": self.pri_beta,
+                    "pri_gamma":self.pri_gamma,
+                    "pri_delta":self.pri_delta,
+                    "iteration":self.iteration,
+                    "restart_num":self.restart_num,
+                    "learning_seed":self.learning_seed,
+                    "tol":self.tol,
+                    "step":self.step
+         }
+
+    def set_params(self, **params):
+        for params, value in params.items():
+            setattr(self, params, value)
+        return self
