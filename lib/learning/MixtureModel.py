@@ -1,6 +1,7 @@
 """ Mixture Models """
 ## standard libraries
 import math
+import itertools
 
 ## 3rd party libraries
 import numpy as np
@@ -8,6 +9,7 @@ from scipy.special import gammaln, psi
 from scipy.stats import multivariate_normal
 from sklearn.base import BaseEstimator
 from sklearn.base import DensityMixin
+from sklearn.utils.validation import check_is_fitted
 
 ## local libraries
 from util.elementary_function import logcosh
@@ -70,7 +72,7 @@ class HyperbolicSecantMixtureVB(DensityMixin, BaseEstimator):
 
     def __init__(self, K:int = 3,
                  pri_alpha:float = 0.1, pri_beta:float = 0.001, pri_gamma:float = 2, pri_delta:float = 2,
-                 iteration:int = 1000, restart_num:int = 5, learning_seed:int = -1, tol:float = 1e-5, step:int = 20):
+                 iteration:int = 1000, restart_num:int = 5, learning_seed:int = -1, tol:float = 1e-5, step:int = 20, is_trace:bool = False):
         """
         Initialize the following parameters:
         1. pri_alpha: hyperparameter for prior distribution of symmetric Dirichlet distribution.
@@ -95,6 +97,7 @@ class HyperbolicSecantMixtureVB(DensityMixin, BaseEstimator):
         self.learning_seed = learning_seed
         self.tol = tol
         self.step = step
+        self.is_trace = is_trace
         pass
 
     def fit(self, train_X:np.ndarray, y:np.ndarray=None):
@@ -173,7 +176,7 @@ class HyperbolicSecantMixtureVB(DensityMixin, BaseEstimator):
                     pass
                 pass
             # energy = energy[:calc_ind]
-            print(energy[-1])
+            if self.is_trace: print(energy[-1])
             if energy[-1] < min_energy:
                 min_energy = energy[-1]
                 result["ratio"] = est_alpha / est_alpha.sum()
@@ -191,17 +194,18 @@ class HyperbolicSecantMixtureVB(DensityMixin, BaseEstimator):
                 result["v_eta"] = est_v_eta
                 result["energy"] = energy
             pass
-        self._result = result
+        self.result_ = result
         return self
 
     def predict_logproba(self, test_X:np.ndarray):
+        check_is_fitted(self, "result_")
         n = test_X.shape[0]
         loglik = np.zeros((n,self.K))
         for k in range(self.K):
-            if self._result["precision"].ndim == 2:
-                loglik[:,k] = np.log(self._result["ratio"][k]) + self._logpdf_hypsecant(test_X, self._result["mean"][k,:],  np.diag(self._result["precision"][k,:]))
-            elif self._result["precision"].ndim == 3:
-                loglik[:,k] = np.log(self._result["ratio"][k]) + self._logpdf_hypsecant(test_X, self._result["mean"][k,:],  self._result["precision"][k,:,:])
+            if self.result_["precision"].ndim == 2:
+                loglik[:,k] = np.log(self.result_["ratio"][k]) + self._logpdf_hypsecant(test_X, self.result_["mean"][k,:],  np.diag(self.result_["precision"][k,:]))
+            elif self.result_["precision"].ndim == 3:
+                loglik[:,k] = np.log(self.result_["ratio"][k]) + self._logpdf_hypsecant(test_X, self.result_["mean"][k,:],  self.result_["precision"][k,:,:])
             else:
                 raise ValueError("Error precision, dimension of precision must be 2 or 3!")
         max_loglik = loglik.max(axis = 1)
@@ -225,6 +229,39 @@ class HyperbolicSecantMixtureVB(DensityMixin, BaseEstimator):
 
     def score(self, test_X:np.ndarray, test_Y:np.ndarray = None):
         return self.predict_logproba(test_X)
+
+    def score_clustering(self, true_label_arg:np.ndarray):
+    """
+    0-1損失によるクラスタ分布の評価
+    1つのデータセットに対する評価で、ラベルの一致数の最大値の平均値を計算する
+    + 入力:
+        1. true_label_arg: 真のラベル番号
+    + 出力:
+        1. max_correct_num: ラベルの最大一致数
+        2. max_perm: 最大一致数を与える置換
+        3. max_est_label_arg: 最大の一致数を与えるラベルの番号
+    """
+    K = len(self.result_["ratio"])
+
+    est_label_prob = self.result_["u_xi"]
+    target_label_arg = true_label_arg
+    est_label_arg = np.argmax(est_label_prob, axis = 1)
+
+    target_label_arg = true_label_arg
+
+    max_correct_num = 0
+    for perm in list(itertools.permutations(range(K), K)):
+        permed_est_label_arg = est_label_arg.copy()
+        for i in range(len(perm)):
+            permed_est_label_arg[est_label_arg == i] = perm[i]
+        correct_num = (permed_est_label_arg == target_label_arg).sum()
+        if correct_num > max_correct_num:
+            max_correct_num = correct_num
+            max_perm = perm
+            max_est_label_arg = permed_est_label_arg
+    return (max_correct_num, max_perm, max_est_label_arg)
+
+
 
     def get_params(self, deep = True):
         return{
@@ -253,7 +290,7 @@ class GaussianMixtureModelVB(DensityMixin, BaseEstimator):
 
     def __init__(self, K:int = 3,
                  pri_alpha:float = 0.1, pri_beta:float = 0.001, pri_gamma:float = 2, pri_delta:float = 2,
-                 iteration:int = 1000, restart_num:int = 5, learning_seed:int = -1, tol:float = 1e-5, step:int = 20):
+                 iteration:int = 1000, restart_num:int = 5, learning_seed:int = -1, tol:float = 1e-5, step:int = 20, is_trace = False):
         """
         Initialize the following parameters:
         1. pri_alpha: hyperparameter for prior distribution of symmetric Dirichlet distribution.
@@ -278,6 +315,7 @@ class GaussianMixtureModelVB(DensityMixin, BaseEstimator):
         self.learning_seed = learning_seed
         self.tol = tol
         self.step = step
+        self.is_trace = is_trace
         pass
 
     def fit(self, train_X:np.ndarray, y:np.ndarray=None):
@@ -327,7 +365,7 @@ class GaussianMixtureModelVB(DensityMixin, BaseEstimator):
                     calc_ind += 1
                     pass
                 pass
-            print(energy[-1])
+            if self.is_trace: print(energy[-1])
             if energy[-1] < min_energy:
                 min_energy = energy[-1]
                 result["ratio"] = est_alpha / est_alpha.sum()
@@ -343,17 +381,18 @@ class GaussianMixtureModelVB(DensityMixin, BaseEstimator):
                 result["u_xi"] = est_u_xi
                 result["energy"] = energy
             pass
-        self._result = result
+        self.result_ = result
 
 
     def predict_logproba(self, test_X:np.ndarray):
+        check_is_fitted(self, "result_")
         n = test_X.shape[0]
         loglik = np.zeros((n,self.K))
         for k in range(self.K):
-            if self._result["scale"].ndim == 2:
-                loglik[:,k] = np.log(self._result["ratio"][k]) + multivariate_normal.logpdf(test_X, self._result["mean"][k,:],  np.diag(self._result["scale"][k,:]))
-            elif self._result["scale"].ndim == 3:
-                loglik[:,k] = np.log(self._result["ratio"][k]) + multivariate_normal.logpdf(test_X, self._result["mean"][k,:],  self._result["scale"][k,:,:])
+            if self.result_["scale"].ndim == 2:
+                loglik[:,k] = np.log(self.result_["ratio"][k]) + multivariate_normal.logpdf(test_X, self.result_["mean"][k,:],  np.diag(self.result_["scale"][k,:]))
+            elif self.result_["scale"].ndim == 3:
+                loglik[:,k] = np.log(self.result_["ratio"][k]) + multivariate_normal.logpdf(test_X, self.result_["mean"][k,:],  self.result_["scale"][k,:,:])
             else:
                 raise ValueError("Error precision, dimension of precision must be 2 or 3!")
         max_loglik = loglik.max(axis = 1)

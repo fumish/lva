@@ -1,1 +1,3 @@
-import learning
+__all__ = ["HyperbolicSecantMixtureVB", "GaussianMixtureModelVB"]
+
+from learning.MixtureModel import *

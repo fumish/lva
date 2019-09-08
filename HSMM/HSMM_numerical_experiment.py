@@ -80,7 +80,7 @@ data_seeds = np.arange(start = data_seed_start, stop = data_seed_start + ndatase
 
 ### 学習モデルの初期値の乱数 -> データseedにoffsetを加えたものを使う
 learning_num = 10
-learning_seed_offset = np.arange(learning_num)+1
+learning_seed_offset = 100
 
 ### 繰り返しアルゴリズムの繰り返し回数
 learning_iteration = 1000
@@ -98,15 +98,36 @@ K = np.array([3, 5])
 
 # # コンポーネントの分布が正規分布の場合
 
-for data_seed in data_seeds:    
+gerror_gmm.mean()
+
+gerror_hsmm.mean()
+
+
+
+gerror_gmm = np.zeros(len(data_seeds))
+gerror_hsmm = np.zeros(len(data_seeds))
+for i, data_seed in enumerate(data_seeds):
     ### データを生成する
     (train_X, train_label, train_label_arg) = GaussianMixtureModel().rvs(true_ratio, true_b, true_s, size = n, data_seed = data_seed)
     (test_X, test_label, test_label_arg) = GaussianMixtureModel().rvs(true_ratio, true_b, true_s, size = N)
-    break
+    
+    gmm_obj = GaussianMixtureModelVB(K = K[0],
+                                     pri_alpha = pri_params["pri_alpha"], pri_beta = pri_params["pri_beta"], pri_gamma = pri_params["pri_gamma"], pri_delta = pri_params["pri_delta"], 
+                                     iteration = 1000, restart_num=learning_num, learning_seed=data_seed + learning_seed_offset)
+    gmm_obj.fit(train_X)
+    
+    hsmm_obj = HyperbolicSecantMixtureVB(K = K[0],                                     
+                                         pri_alpha = pri_params["pri_alpha"], pri_beta = pri_params["pri_beta"], pri_gamma = pri_params["pri_gamma"], pri_delta = pri_params["pri_delta"], 
+                                         iteration = 1000, restart_num=learning_num, learning_seed=data_seed + learning_seed_offset)
+    hsmm_obj.fit(train_X)
+    
+    true_empirical_entropy = GaussianMixtureModel().logpdf(test_X, true_ratio, true_b, true_s)
+    gerror_gmm[i] = (true_empirical_entropy - gmm_obj.predict_logproba(test_X))/len(test_X)
+    gerror_hsmm[i] = (true_empirical_entropy - hsmm_obj.predict_logproba(test_X))/len(test_X)
 
 
 # +
-gmm_obj = GaussianMixtureModelVB(iteration = 1000, step=2)
+
 
 gmm_obj.fit(train_X)
 # -
